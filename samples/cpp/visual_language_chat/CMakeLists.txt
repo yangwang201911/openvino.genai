@@ -19,11 +19,21 @@ add_executable(visual_language_chat visual_language_chat.cpp load_image.cpp)
 target_include_directories(visual_language_chat PRIVATE "${CMAKE_BINARY_DIR}")
 target_link_libraries(visual_language_chat PRIVATE openvino::genai)
 
+
+add_executable(test_cdpruner test_cdpruner.cpp /home/wy/openvino.genai/src/cpp/src/visual_language/cdpruner.cpp)
+target_include_directories(test_cdpruner PRIVATE "${CMAKE_BINARY_DIR}")
+target_link_libraries(test_cdpruner PRIVATE openvino::genai)
+
 set_target_properties(visual_language_chat PROPERTIES
     # Ensure out of box LC_RPATH on macOS with SIP
     INSTALL_RPATH_USE_LINK_PATH ON)
 
 install(TARGETS visual_language_chat
+        RUNTIME DESTINATION samples_bin/
+        COMPONENT samples_bin
+        EXCLUDE_FROM_ALL)
+
+install(TARGETS test_cdpruner
         RUNTIME DESTINATION samples_bin/
         COMPONENT samples_bin
         EXCLUDE_FROM_ALL)

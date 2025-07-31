@@ -9,6 +9,7 @@
 
 #include "visual_language/vision_encoder.hpp"
 #include "visual_language/inputs_embedder.hpp"
+#include "visual_language/cdpruner.hpp"
 
 namespace ov::genai {
 
@@ -49,6 +50,13 @@ public:
         const std::vector<EncodedImage>& images
     ) const override;
 
+    // CDPruner methods
+    void enable_cdpruner(size_t target_token_count = 256, float relevance_weight = 0.5f);
+    void disable_cdpruner();
+    bool is_cdpruner_enabled() const { return m_cdpruner_enabled; }
+    void set_cdpruner_target_tokens(size_t count);
+    void set_cdpruner_relevance_weight(float weight);
+
 protected:
     // A model for merging image embeddings (hidden states), rotary_pos_emb and attension_mask.
     // Inputs:
@@ -62,9 +70,15 @@ protected:
     int64_t m_rope_delta = 0;
     ov::Tensor m_merged_image_embeddings;
 
+    // CDPruner support
+    std::unique_ptr<cdpruner::CDPruner> m_cdpruner;
+    bool m_cdpruner_enabled = true;
+    std::string m_current_text_query;
+
     virtual ov::Tensor run_image_embeddings_merger(
         const std::vector<EncodedImage>& images, 
-        const std::vector<size_t>& images_sequence);
+        const std::vector<size_t>& images_sequence,
+        const ov::Tensor& text_embeds = ov::Tensor());
 
     ov::Tensor get_rotary_pos_emb(const std::vector<std::array<size_t, 3>>& grids_thw);
 

@@ -137,7 +137,8 @@ InputsEmbedderQwen2_5_VL::InputsEmbedderQwen2_5_VL(
 
 ov::Tensor InputsEmbedderQwen2_5_VL::run_image_embeddings_merger(
     const std::vector<EncodedImage>& images, 
-    const std::vector<size_t>& images_sequence
+    const std::vector<size_t>& images_sequence,
+    const ov::Tensor& text_embeds
 ) {
     auto [reordered_image_embeds, reordered_images_grid_thw] = qwen2_vl_utils::reorder_image_embeds_and_grid_thw(images, images_sequence);
 
@@ -165,6 +166,17 @@ ov::Tensor InputsEmbedderQwen2_5_VL::run_image_embeddings_merger(
 
     ov::Tensor res = ov::Tensor(processed_vision_embeds.get_element_type(), processed_vision_embeds.get_shape());
     std::memcpy(res.data(), processed_vision_embeds.data(), processed_vision_embeds.get_byte_size());
+    // Apply CDPruner if enabled
+    if (m_cdpruner_enabled && m_cdpruner) {
+        try {
+            auto [pruned_features, selected_indices] = m_cdpruner->prune_visual_tokens(res, text_embeds);
+            return pruned_features;
+        } catch (const std::exception& e) {
+            // If CDPruner fails, fallback to original features
+            // Log warning in debug mode
+            std::cerr << "CDPruner failed: " << e.what() << ". Using original features." << std::endl;
+        }
+    }
     return res;
 }
 

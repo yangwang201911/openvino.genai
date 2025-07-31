@@ -5,6 +5,7 @@
 #include "visual_language/qwen2vl/classes.hpp"
 
 #include "visual_language/clip.hpp"
+#include "visual_language/cdpruner.hpp"
 
 #include "utils.hpp"
 
@@ -380,6 +381,10 @@ InputsEmbedderQwen2VL::InputsEmbedderQwen2VL(
         [&compiled_model]() -> ov::InferRequest {
             return compiled_model.create_infer_request();
         });
+    
+    // Initialize CDPruner (disabled by default)
+    m_cdpruner = std::make_unique<cdpruner::CDPruner>();
+    m_cdpruner_enabled = true;
 }
 
 InputsEmbedderQwen2VL::InputsEmbedderQwen2VL(
@@ -402,6 +407,10 @@ InputsEmbedderQwen2VL::InputsEmbedderQwen2VL(
         [&compiled_model]() -> ov::InferRequest {
             return compiled_model.create_infer_request();
         });
+    
+    // Initialize CDPruner (disabled by default)
+    m_cdpruner = std::make_unique<cdpruner::CDPruner>();
+    m_cdpruner_enabled = true;
 }
 
 std::pair<std::string, std::vector<size_t>> InputsEmbedderQwen2VL::normalize_prompt(const std::string& prompt, size_t base_id, const std::vector<EncodedImage>& images) const {
@@ -432,6 +441,9 @@ std::pair<std::string, std::vector<size_t>> InputsEmbedderQwen2VL::normalize_pro
 }
 
 ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_prompt, const std::vector<ov::genai::EncodedImage>& images, ov::genai::VLMPerfMetrics& metrics, bool recalculate_merged_embeddings, const std::vector<size_t>& images_sequence) {
+    // Store current text query for CDPruner
+    m_current_text_query = unified_prompt;
+    
     std::vector<std::array<size_t, 3>> images_grid_thw;
     images_grid_thw.reserve(images.size());
     for (const auto& encoded_image : images) {
@@ -467,7 +479,7 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
     }
     ov::Tensor merged_image_embeddings_tensor;
     if (recalculate_merged_embeddings) {
-        m_merged_image_embeddings = run_image_embeddings_merger(images, images_sequence);
+        m_merged_image_embeddings = run_image_embeddings_merger(images, images_sequence, text_embeds);
     }
     merged_image_embeddings_tensor = m_merged_image_embeddings;
 
@@ -502,7 +514,8 @@ void InputsEmbedderQwen2VL::finish_chat() {
 
 ov::Tensor InputsEmbedderQwen2VL::run_image_embeddings_merger(
     const std::vector<EncodedImage>& images,
-    const std::vector<size_t>& images_sequence
+    const std::vector<size_t>& images_sequence,
+    const ov::Tensor& text_embeds
 ) {
     auto [reordered_image_embeds, reordered_images_grid_thw] = qwen2_vl_utils::reorder_image_embeds_and_grid_thw(images, images_sequence);
 
@@ -520,6 +533,19 @@ ov::Tensor InputsEmbedderQwen2VL::run_image_embeddings_merger(
 
     ov::Tensor res = ov::Tensor(processed_vision_embeds.get_element_type(), processed_vision_embeds.get_shape());
     std::memcpy(res.data(), processed_vision_embeds.data(), processed_vision_embeds.get_byte_size());
+    
+    // Apply CDPruner if enabled
+    if (m_cdpruner_enabled && m_cdpruner) {
+        try {
+            auto [pruned_features, selected_indices] = m_cdpruner->prune_visual_tokens(res, text_embeds);
+            return pruned_features;
+        } catch (const std::exception& e) {
+            // If CDPruner fails, fallback to original features
+            // Log warning in debug mode
+            std::cerr << "CDPruner failed: " << e.what() << ". Using original features." << std::endl;
+        }
+    }
+    
     return res;
 }
 
@@ -715,6 +741,33 @@ ov::Tensor InputsEmbedderQwen2VL::create_position_ids(
     }
 
     return position_ids;
+}
+
+// CDPruner control methods
+void InputsEmbedderQwen2VL::enable_cdpruner(size_t target_token_count, float relevance_weight) {
+    if (!m_cdpruner) {
+        m_cdpruner = std::make_unique<cdpruner::CDPruner>(target_token_count, relevance_weight);
+    } else {
+        m_cdpruner->set_target_token_count(target_token_count);
+        m_cdpruner->set_relevance_weight(relevance_weight);
+    }
+    m_cdpruner_enabled = true;
+}
+
+void InputsEmbedderQwen2VL::disable_cdpruner() {
+    m_cdpruner_enabled = false;
+}
+
+void InputsEmbedderQwen2VL::set_cdpruner_target_tokens(size_t count) {
+    if (m_cdpruner) {
+        m_cdpruner->set_target_token_count(count);
+    }
+}
+
+void InputsEmbedderQwen2VL::set_cdpruner_relevance_weight(float weight) {
+    if (m_cdpruner) {
+        m_cdpruner->set_relevance_weight(weight);
+    }
 }
 
 } // namespace ov::genai
