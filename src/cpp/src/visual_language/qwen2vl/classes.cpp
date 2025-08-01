@@ -382,7 +382,7 @@ InputsEmbedderQwen2VL::InputsEmbedderQwen2VL(
             return compiled_model.create_infer_request();
         });
     
-    // Initialize CDPruner (disabled by default)
+    // Initialize CDPruner (enabled by default)
     m_cdpruner = std::make_unique<cdpruner::CDPruner>();
     m_cdpruner_enabled = true;
 }

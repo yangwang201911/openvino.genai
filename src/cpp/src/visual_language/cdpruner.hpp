@@ -26,7 +26,7 @@ public:
      * @param target_token_count Number of visual tokens to retain after pruning
      * @param relevance_weight Weight for relevance score influence (theta parameter)
      */
-    CDPruner(size_t target_token_count = 32, float relevance_weight = 0.5f);
+    CDPruner(size_t target_token_count = 256, float relevance_weight = 0.5f);
 
     /**
      * @brief Apply CDPruner to reduce visual tokens
