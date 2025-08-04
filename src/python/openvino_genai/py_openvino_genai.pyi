@@ -610,6 +610,7 @@ class GenerationConfig:
     temperature: float
     top_k: int
     top_p: float
+    is_video: bool
     @typing.overload
     def __init__(self, json_path: os.PathLike) -> None:
         """
