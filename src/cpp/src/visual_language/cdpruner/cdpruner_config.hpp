@@ -24,9 +24,13 @@ struct Config {
     
     /// @brief Whether to enable debug output
     bool debug_mode = false;
-    
+
     /// @brief Threshold for numerical stability
     float numerical_threshold = 1e-6f;
+
+    /// @brief Whether to apply negative mean for relevance calculation
+    /// This is needed for CLIP-based models (like LLaVA) due to counterintuitive similarity values
+    bool use_negative_relevance = false;
 };
 
 } // namespace ov::genai::cdpruner 
