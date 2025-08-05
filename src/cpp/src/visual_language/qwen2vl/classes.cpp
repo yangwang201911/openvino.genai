@@ -631,12 +631,17 @@ InputsEmbedderQwen2VL::InputsEmbedderQwen2VL(
     const std::string& device,
     const ov::AnyMap device_config) :
     IInputsEmbedder(vlm_config, model_dir, device, device_config) {
+
+
     auto model = utils::singleton_core().read_model(model_dir / "openvino_vision_embeddings_merger_model.xml");
     if (std::getenv("DISABLE_VLSDPA") != nullptr) {
         m_with_cu_seqlens_input = false;
     } else {
         utils::apply_vl_sdpa_transformations(model);
     }
+
+    std::cout << "######InputsEmbedderQwen2VL: m_with_cu_seqlens_input " << m_with_cu_seqlens_input << std::endl; 
+
     auto compiled_model = utils::singleton_core().compile_model(model, device, device_config);
     ov::genai::utils::print_compiled_model_properties(compiled_model, "VLM vision embeddings merger model");
     m_ireq_queue_vision_embeddings_merger = std::make_unique<CircularBufferQueue<ov::InferRequest>>(
@@ -662,6 +667,9 @@ InputsEmbedderQwen2VL::InputsEmbedderQwen2VL(
     } else {
         utils::apply_vl_sdpa_transformations(model);
     }
+
+    std::cout << "######InputsEmbedderQwen2VL: m_with_cu_seqlens_input " << m_with_cu_seqlens_input << std::endl; 
+
     auto compiled_model = utils::singleton_core().compile_model(model,
         device,
         device_config

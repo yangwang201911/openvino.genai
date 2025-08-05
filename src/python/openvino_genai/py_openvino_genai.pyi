@@ -590,6 +590,7 @@ class GenerationConfig:
     frequency_penalty: float
     ignore_eos: bool
     include_stop_str_in_output: bool
+    is_video: bool
     length_penalty: float
     logprobs: int
     max_length: int
@@ -610,7 +611,6 @@ class GenerationConfig:
     temperature: float
     top_k: int
     top_p: float
-    is_video: bool
     @typing.overload
     def __init__(self, json_path: os.PathLike) -> None:
         """
