@@ -175,6 +175,19 @@ std::vector<ov::genai::EncodedImage> InputsEmbedder::IInputsEmbedder::encode_ima
     return embeds;
 }
 
+std::vector<ov::genai::EncodedImage> InputsEmbedder::IInputsEmbedder::encode_images(const std::vector<ov::Tensor>& images, const ov::AnyMap& config_map, const bool& is_video) {
+    std::vector<ov::Tensor> single_images = to_single_image_tensors(images);
+    if (is_video) {
+        return m_vision_encoder->encode_video(single_images, config_map);
+    }
+
+    std::vector<EncodedImage> embeds;
+    for (const ov::Tensor& image : single_images) {
+        embeds.emplace_back(m_vision_encoder->encode(image, config_map));
+    }
+    return embeds;
+}
+
 ov::Tensor InputsEmbedder::IInputsEmbedder::get_inputs_embeds(const std::string& prompt, const std::vector<ov::Tensor>& images, ov::genai::VLMPerfMetrics& metrics, const std::vector<size_t>& image_sequence) {
     return get_inputs_embeds(prompt, encode_images(images), metrics, true, image_sequence);
 }
@@ -241,6 +254,10 @@ ov::Tensor InputsEmbedder::get_inputs_embeds(const std::string& prompt, const st
 
 std::vector<ov::genai::EncodedImage> InputsEmbedder::encode_images(const std::vector<ov::Tensor>& images, const bool& is_video) {
     return m_impl->encode_images(images, is_video);
+}
+
+std::vector<ov::genai::EncodedImage> InputsEmbedder::encode_images(const std::vector<ov::Tensor>& images, const ov::AnyMap& config_map, const bool& is_video) {
+    return m_impl->encode_images(images, config_map, is_video);
 }
 
 std::pair<ov::Tensor, std::optional<int64_t>> InputsEmbedder::get_position_ids(const size_t inputs_embeds_size, const size_t history_size) {
