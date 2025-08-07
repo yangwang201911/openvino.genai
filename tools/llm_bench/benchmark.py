@@ -18,10 +18,14 @@ import task.image_generation as bench_image
 import task.super_resolution_generation as bench_ldm_sr
 import task.speech_to_text_generation as bench_speech
 import task.text_embeddings as bench_text_embed
+import psutil
 
 DEFAULT_TORCH_THREAD_NUMS = 16
 memory_monitor = MemMonitorWrapper()
 
+def bind_cpu(core_list):
+    p = psutil.Process(os.getpid())
+    p.cpu_affinity(core_list)
 
 def num_iters_type(x):
     x = int(x)
@@ -317,4 +321,5 @@ def main():
 
 
 if __name__ == '__main__':
+    bind_cpu([0,1,2,3])
     main()
