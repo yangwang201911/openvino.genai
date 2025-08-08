@@ -46,10 +46,9 @@ int main(int argc, char* argv[]) try {
         // Print current configuration
         auto config = pipe.get_visual_token_pruning_config();
         std::cout << "CDPruner configuration:" << std::endl;
-        std::cout << "  - Enabled: " << (pipe.is_visual_token_pruning_enabled() ? "true" : "false") << std::endl;
-        std::cout << "  - Num visual tokens: " << config["num_visual_tokens"].as<size_t>() << std::endl;
-        std::cout << "  - Relevance weight: " << config["relevance_weight"].as<float>() << std::endl;
-        std::cout << "  - Debug mode: " << (config["debug_mode"].as<bool>() ? "true" : "false") << std::endl;
+        for (const auto& [key, value] : config) {
+            std::cout << "  - " << key << ": " << value.as<std::string>() << std::endl;
+        }
     } else {
         std::cout << "CDPruner is disabled" << std::endl;
         pipe.set_visual_token_pruning_enabled(false);

@@ -32,9 +32,20 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
     // Input validation
     if (!m_config.enable_pruning) {
         // If pruning is disabled, return all tokens
+        if (m_config.debug_mode) {
+            std::cout << "Pruning is disabled. Returning all tokens." << std::endl;
+        }
         return create_all_tokens_selection(visual_features);
     }
-    
+
+    if (m_config.num_visual_tokens == 0 || m_config.num_visual_tokens >= visual_features.get_shape()[1]) {
+        if (m_config.debug_mode) {
+            std::cout << "Warning: num_visual_tokens is set to 0 or exceeds the number of visual tokens. "
+                      << "Returning all tokens without pruning." << std::endl;
+        }
+        return create_all_tokens_selection(visual_features);
+    }
+
     validate_input_tensors(visual_features, text_features);
     
     // Performance timing setup
