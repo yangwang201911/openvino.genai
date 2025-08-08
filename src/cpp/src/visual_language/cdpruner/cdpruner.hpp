@@ -87,7 +87,14 @@ public:
      * @return Current configuration
      */
     const Config& get_config() const { return m_config; }
-    
+
+    /**
+     * @brief Update configuration dynamically
+     * @param new_config New configuration to apply
+     * @return true if configuration was updated successfully
+     */
+    bool update_config(const Config& new_config);
+
     /**
      * @brief Compute current pruning ratio
      * @return Ratio of selected tokens to default token count

@@ -289,4 +289,11 @@ void ContinuousBatchingPipeline::finish_chat() {
 
 void ContinuousBatchingPipeline::set_visual_token_pruning_config(const ov::AnyMap& vision_config) {
     m_impl->m_vision_config = vision_config;
+    size_t num_visual_tokens =
+        vision_config.count("num_visual_tokens") ? vision_config.at("num_visual_tokens").as<size_t>() : 64;
+    float relevance_weight =
+        vision_config.count("relevance_weight") ? vision_config.at("relevance_weight").as<float>() : 0.5f;
+    bool enable_pruning = vision_config.count("enable_pruning") ? vision_config.at("enable_pruning").as<bool>() : false;
+    bool debug_mode = vision_config.count("debug_mode") ? vision_config.at("debug_mode").as<bool>() : false;
+    m_impl->set_visual_token_pruning_config(num_visual_tokens, relevance_weight, enable_pruning, debug_mode);
 }

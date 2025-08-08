@@ -229,11 +229,10 @@ public:
     /// @param num_visual_tokens Number of visual tokens to retain after pruning (default: 64)
     /// @param relevance_weight Weight for balancing relevance vs diversity, range [0.0, 1.0] (default: 0.5)
     /// @param enable_pruning Whether to enable pruning functionality (default: true)
-    void set_visual_token_pruning_config(
-        size_t num_visual_tokens = 64,
-        float relevance_weight = 0.5f,
-        bool enable_pruning = true
-    );
+    void set_visual_token_pruning_config(size_t num_visual_tokens = 64,
+                                         float relevance_weight = 0.5f,
+                                         bool enable_pruning = true,
+                                         bool debug_mode = false);
 
     /// @brief Get current visual token pruning configuration
     /// @return A map containing current CDPruner configuration

@@ -370,21 +370,23 @@ public:
         m_generation_config.validate();
     }
 
-    void set_visual_token_pruning_config(
-        size_t num_visual_tokens,
-        float relevance_weight,
-        bool enable_pruning
-    ) override {
+    void set_visual_token_pruning_config(size_t num_visual_tokens,
+                                         float relevance_weight,
+                                         bool enable_pruning,
+                                         bool debug_mode) override {
         // Validate input parameters
         OPENVINO_ASSERT(num_visual_tokens > 0 && num_visual_tokens <= 1024,
-            "num_visual_tokens must be between 1 and 1024, got: ", num_visual_tokens);
+                        "num_visual_tokens must be between 1 and 1024, got: ",
+                        num_visual_tokens);
         OPENVINO_ASSERT(relevance_weight >= 0.0f && relevance_weight <= 1.0f,
-            "relevance_weight must be between 0.0 and 1.0, got: ", relevance_weight);
+                        "relevance_weight must be between 0.0 and 1.0, got: ",
+                        relevance_weight);
 
         // Update configuration
         m_cdpruner_config["num_visual_tokens"] = num_visual_tokens;
         m_cdpruner_config["relevance_weight"] = relevance_weight;
         m_cdpruner_config["enable_pruning"] = enable_pruning;
+        m_cdpruner_config["debug_mode"] = debug_mode;
     }
 
     ov::AnyMap get_visual_token_pruning_config() const override {
@@ -544,12 +546,11 @@ void VLMPipeline::set_generation_config(const GenerationConfig& new_config) {
     m_pimpl->set_generation_config(new_config);
 }
 
-void VLMPipeline::set_visual_token_pruning_config(
-    size_t num_visual_tokens,
-    float relevance_weight,
-    bool enable_pruning
-) {
-    m_pimpl->set_visual_token_pruning_config(num_visual_tokens, relevance_weight, enable_pruning);
+void VLMPipeline::set_visual_token_pruning_config(size_t num_visual_tokens,
+                                                  float relevance_weight,
+                                                  bool enable_pruning,
+                                                  bool debug_mode) {
+    m_pimpl->set_visual_token_pruning_config(num_visual_tokens, relevance_weight, enable_pruning, debug_mode);
 }
 
 ov::AnyMap VLMPipeline::get_visual_token_pruning_config() const {

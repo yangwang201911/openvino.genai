@@ -289,6 +289,13 @@ void InputsEmbedder::finish_chat() {
     return m_impl->finish_chat();
 }
 
+void InputsEmbedder::set_visual_token_pruning_config(size_t num_visual_tokens,
+                                                     float relevance_weight,
+                                                     bool enable_pruning,
+                                                     bool debug_mode) {
+    return m_impl->set_visual_token_pruning_config(num_visual_tokens, relevance_weight, enable_pruning, debug_mode);
+}
+
 std::pair<std::string, std::vector<size_t>> InputsEmbedder::normalize_prompt(
     const std::string& prompt,
     size_t base_id,

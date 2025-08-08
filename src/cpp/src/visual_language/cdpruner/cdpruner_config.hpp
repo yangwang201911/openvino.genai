@@ -5,6 +5,7 @@
 
 #include <string>
 #include <cstddef>
+#include <cmath>
 
 namespace ov::genai::cdpruner {
 
@@ -31,6 +32,24 @@ struct Config {
     /// @brief Whether to apply negative mean for relevance calculation
     /// This is needed for CLIP-based models (like LLaVA) due to counterintuitive similarity values
     bool use_negative_relevance = false;
+
+    /// @brief Compare two Config structures for equality
+    /// @param other The other Config to compare with
+    /// @return true if all configuration parameters are equal, false otherwise
+    bool operator==(const Config& other) const {
+        return num_visual_tokens == other.num_visual_tokens &&
+               std::abs(relevance_weight - other.relevance_weight) < 1e-6f && enable_pruning == other.enable_pruning &&
+               device == other.device && debug_mode == other.debug_mode &&
+               std::abs(numerical_threshold - other.numerical_threshold) < 1e-9f &&
+               use_negative_relevance == other.use_negative_relevance;
+    }
+
+    /// @brief Compare two Config structures for inequality
+    /// @param other The other Config to compare with
+    /// @return true if any configuration parameters differ, false otherwise
+    bool operator!=(const Config& other) const {
+        return !(*this == other);
+    }
 };
 
 } // namespace ov::genai::cdpruner 

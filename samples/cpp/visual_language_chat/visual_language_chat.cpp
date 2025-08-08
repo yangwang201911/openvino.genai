@@ -10,8 +10,8 @@ bool print_subword(std::string&& subword) {
 }
 
 int main(int argc, char* argv[]) try {
-    if (3 > argc || argc > 6) {
-        throw std::runtime_error(std::string{"Usage: "} + argv[0] + " <MODEL_DIR> <IMAGE_FILE> [<DEVICE>] [<ENABLE_CDPRUNER>] [<NUM_VISUAL_TOKENS>]");
+    if (3 > argc || argc > 7) {
+        throw std::runtime_error(std::string{"Usage: "} + argv[0] + " <MODEL_DIR> <IMAGE_FILE> [<DEVICE>] [<ENABLE_CDPRUNER>] [<NUM_VISUAL_TOKENS>] [<DEBUG_MODE>]");
     }
 
     std::string model_dir = argv[1];
@@ -19,6 +19,7 @@ int main(int argc, char* argv[]) try {
     std::string device = argc > 3 ? argv[3] : "CPU";
     bool enable_cdpruner = argc > 4 ? (std::string(argv[4]) == "true" || std::string(argv[4]) == "1") : false;
     size_t num_visual_tokens = argc > 5 ? std::stoul(argv[5]) : 64;
+    bool debug_mode = argc > 6 ? (std::string(argv[6]) == "true" || std::string(argv[6]) == "1") : false;
 
     std::vector<ov::Tensor> rgbs = utils::load_images(image_file);
 
@@ -37,8 +38,9 @@ int main(int argc, char* argv[]) try {
         std::cout << "Enabling CDPruner with " << num_visual_tokens << " visual tokens" << std::endl;
         pipe.set_visual_token_pruning_config(
             num_visual_tokens,  // num_visual_tokens
-            0.5f,              // relevance_weight  
-            true               // enable_pruning
+            0.5f,              // relevance_weight
+            true,              // enable_pruning
+            debug_mode         // enable debug mode
         );
         
         // Print current configuration
@@ -47,6 +49,7 @@ int main(int argc, char* argv[]) try {
         std::cout << "  - Enabled: " << (pipe.is_visual_token_pruning_enabled() ? "true" : "false") << std::endl;
         std::cout << "  - Num visual tokens: " << config["num_visual_tokens"].as<size_t>() << std::endl;
         std::cout << "  - Relevance weight: " << config["relevance_weight"].as<float>() << std::endl;
+        std::cout << "  - Debug mode: " << (config["debug_mode"].as<bool>() ? "true" : "false") << std::endl;
     } else {
         std::cout << "CDPruner is disabled" << std::endl;
         pipe.set_visual_token_pruning_enabled(false);

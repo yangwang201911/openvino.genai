@@ -252,6 +252,35 @@ void CDPruner::validate_config(const Config& config) {
     }
 }
 
+bool CDPruner::update_config(const Config& new_config) {
+    try {
+        // Validate the new configuration first
+        validate_config(new_config);
+
+        // Update the configuration
+        m_config = new_config;
+
+        // Reinitialize components with new config
+        m_relevance_calc = RelevanceCalculator(new_config);
+        m_kernel_builder = ConditionalKernelBuilder(new_config);
+        m_dpp_selector = FastGreedyDPP(new_config);
+
+        if (m_config.debug_mode) {
+            std::cout << "CDPruner configuration updated successfully:" << std::endl;
+            std::cout << "  num_visual_tokens: " << m_config.num_visual_tokens << std::endl;
+            std::cout << "  relevance_weight: " << m_config.relevance_weight << std::endl;
+            std::cout << "  enable_pruning: " << (m_config.enable_pruning ? "true" : "false") << std::endl;
+        }
+
+        return true;
+    } catch (const std::exception& e) {
+        if (m_config.debug_mode) {
+            std::cerr << "Failed to update CDPruner configuration: " << e.what() << std::endl;
+        }
+        return false;
+    }
+}
+
 void CDPruner::validate_input_tensors(const ov::Tensor& visual_features, 
                                     const ov::Tensor& text_features) {
     // Validate visual features
