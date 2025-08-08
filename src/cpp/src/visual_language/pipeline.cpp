@@ -222,8 +222,10 @@ public:
         }
 
         auto start_get_inputs_embeds = std::chrono::steady_clock::now();
+        std::cout << "######pipeline : get_inputs_embeds/MEPT start : " << start_get_inputs_embeds.time_since_epoch().count()/1000000  << std::endl;
         ov::Tensor inputs_embeds = m_inputs_embedder->get_inputs_embeds(unified_prompt, encoded_images, perf_metrics, encoded_images.size() > 0, image_sequence);
         auto end_get_inputs_embeds = std::chrono::steady_clock::now();
+        std::cout << "######pipeline : get_inputs_embeds/MEPT end : " << end_get_inputs_embeds.time_since_epoch().count()/1000000  << std::endl;
 
         if (m_is_npu) {
             // Prefill model in NPU is reshaped to NPUW_LLM_MAX_PROMPT_LEN x NPUW_LLM_MAX_PROMPT_LEN

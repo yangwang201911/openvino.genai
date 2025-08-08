@@ -798,7 +798,13 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
         ov::Tensor visual_features = convert_visual_features_for_cdpruner(merged_image_embeddings_tensor);
         
         // Apply CDPruner to get pruned visual tokens
+        auto start_apply_pruning = std::chrono::steady_clock::now();
+        std::cout << "###### MEPT-PRUNE start: " << start_apply_pruning.time_since_epoch().count()/1000000  << std::endl;
         ov::Tensor pruned_visual_features = m_cdpruner->apply_pruning(visual_features, text_features);
+        auto stop_apply_pruning = std::chrono::steady_clock::now();
+        std::cout << "###### MEPT-PRUNE stop: " << stop_apply_pruning.time_since_epoch().count()/1000000  << std::endl;
+        auto apply_pruning_duration = std::chrono::duration_cast<std::chrono::microseconds>(stop_apply_pruning - start_apply_pruning);
+        std::cout << "###### MEPT-PRUNE_duration: " << apply_pruning_duration.count() << " us " << std::endl;
         
         // [CDPruner] Convert back from 3D [1, num_tokens, hidden_size] to 2D [num_tokens, hidden_size]
         // to match the expected input format for merge_text_and_image_embeddings
