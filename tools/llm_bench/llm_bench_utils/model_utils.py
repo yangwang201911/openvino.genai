@@ -188,7 +188,8 @@ def analyze_args(args):
             if use_case in ['text_gen'] and args.device != "NPU":
                 model_args['config']['ATTENTION_BACKEND'] = PA_ATTENTION_BACKEND
             elif use_case in ['vlm']:
-                model_args['config']['ATTENTION_BACKEND'] = SDPA_ATTENTION_BACKEND
+                #model_args['config']['ATTENTION_BACKEND'] = SDPA_ATTENTION_BACKEND
+                model_args['config']['ATTENTION_BACKEND'] = PA_ATTENTION_BACKEND
         log.info(f"OV Config={model_args['config']}")
     elif model_framework == 'pt':
         log.info(f"PT Config={model_args['config']}")
