@@ -38,6 +38,14 @@ public:
     std::vector<std::vector<size_t>> select(const ov::Tensor& kernel, size_t num_tokens);
 
     /**
+     * @brief Select tokens using OpenVINO ops-based DPP model (alternative implementation)
+     * @param kernel Conditional kernel matrix [B, N, N]
+     * @param num_tokens Number of tokens to select
+     * @return Selected token indices for each batch [B, T]
+     */
+    std::vector<std::vector<size_t>> select_with_ops_model(const ov::Tensor& kernel, size_t num_tokens);
+
+    /**
      * @brief Create boolean mask from selected indices
      * @param selected_indices Selected indices for each batch [B, T]
      * @param total_tokens Total number of tokens
@@ -93,6 +101,38 @@ private:
      */
     void update_marginal_gains(size_t iteration, size_t selected_idx, 
                              const ov::Tensor& cis, ov::Tensor& di2s);
+
+    /**
+     * @brief Create OpenVINO model for DPP token selection
+     * @param num_tokens Number of tokens to select
+     * @param total_tokens Total number of available tokens
+     * @return OpenVINO model for DPP selection
+     */
+    std::shared_ptr<ov::Model> create_dpp_selection_model(size_t num_tokens, size_t total_tokens);
+
+    /**
+     * @brief Helper function to create argmax operation in OpenVINO ops
+     * @param input Input tensor to find argmax
+     * @param axis Axis along which to find argmax
+     * @return Argmax operation node
+     */
+    std::shared_ptr<ov::Node> create_argmax_ops(std::shared_ptr<ov::Node> input, int64_t axis = -1);
+
+    /**
+     * @brief Helper function to create orthogonalization operation in OpenVINO ops
+     * @param kernel_row Current kernel row [N]
+     * @param cis_matrix Orthogonalized vectors [T, N]
+     * @param selected_idx Current selected token index
+     * @param iteration Current iteration number
+     * @param norm_factor Normalization factor
+     * @return Orthogonalized vector
+     */
+    std::shared_ptr<ov::Node> create_orthogonalization_ops(
+        std::shared_ptr<ov::Node> kernel_row,
+        std::shared_ptr<ov::Node> cis_matrix,
+        std::shared_ptr<ov::Node> selected_idx,
+        size_t iteration,
+        std::shared_ptr<ov::Node> norm_factor);
 
     Config m_config;
 };

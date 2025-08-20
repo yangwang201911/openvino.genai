@@ -20,8 +20,8 @@ protected:
         config.pruning_debug_mode = true;
         config.use_negative_relevance = false;  // Not using negative correlation as requested
         config.numerical_threshold = 1e-6f;
-        config.device = "CPU";
-        config.use_ops_model = false;
+        config.device = "GPU";
+        config.use_ops_model = true;
         
         dpp_selector = std::make_unique<FastGreedyDPP>(config);
     }
@@ -29,6 +29,7 @@ protected:
     Config config;
     std::unique_ptr<FastGreedyDPP> dpp_selector;
 };
+
 
 TEST_F(FastGreedyDPPTest, ConditionalKernelMatrixSelection) {
     // Test case: Select 3 tokens out of 4 using the specific conditional kernel matrix
@@ -57,7 +58,7 @@ TEST_F(FastGreedyDPPTest, ConditionalKernelMatrixSelection) {
     
     // Perform DPP selection
     auto selected_tokens = dpp_selector->select(kernel_matrix, num_tokens_to_keep);
-    
+
     // Validate results
     ASSERT_EQ(selected_tokens.size(), 1);  // Single batch
     ASSERT_EQ(selected_tokens[0].size(), num_tokens_to_keep);  // Should select 3 tokens
@@ -74,6 +75,52 @@ TEST_F(FastGreedyDPPTest, ConditionalKernelMatrixSelection) {
     // Verify token 2 is NOT selected (should be pruned)
     auto it = std::find(actual_tokens.begin(), actual_tokens.end(), 2);
     EXPECT_EQ(it, actual_tokens.end()) << "Token 2 should be pruned but was selected";
+}
+
+TEST_F(FastGreedyDPPTest, ConditionalKernelMatrixSelectionSubgraph) {
+    // Test case: Select 3 tokens out of 4 using the specific conditional kernel matrix
+    // Expected result: tokens 1, 0, 3 should be selected
+    
+    // Create the conditional kernel matrix as specified:
+    // [0.8, 0.3, 0.1, 0.2]  // token 0
+    // [0.3, 0.9, 0.4, 0.1]  // token 1  
+    // [0.1, 0.4, 0.7, 0.5]  // token 2
+    // [0.2, 0.1, 0.5, 0.6]  // token 3
+    
+    std::vector<float> kernel_data = {
+        // Batch 0, 4x4 kernel matrix
+        0.8f, 0.3f, 0.1f, 0.2f,  // token 0 row
+        0.3f, 0.9f, 0.4f, 0.1f,  // token 1 row
+        0.1f, 0.4f, 0.7f, 0.5f,  // token 2 row
+        0.2f, 0.1f, 0.5f, 0.6f   // token 3 row
+    };
+    
+    // Create OpenVINO tensor [batch_size=1, tokens=4, tokens=4]
+    ov::Tensor kernel_matrix(ov::element::f32, {1, 4, 4});
+    std::memcpy(kernel_matrix.data<float>(), kernel_data.data(), kernel_data.size() * sizeof(float));
+    
+    // Number of tokens to keep
+    size_t num_tokens_to_keep = 3;
+    
+    // Perform DPP selection
+    auto selected_tokens_origin = dpp_selector->select(kernel_matrix, num_tokens_to_keep);
+
+    // Validate results
+    ASSERT_EQ(selected_tokens_origin.size(), 1);  // Single batch
+    ASSERT_EQ(selected_tokens_origin[0].size(), num_tokens_to_keep);  // Should select 3 tokens
+
+    auto selected_tokens = dpp_selector->select_with_ops_model(kernel_matrix, num_tokens_to_keep);
+    // Validate results
+    ASSERT_EQ(selected_tokens.size(), 1);  // Single batch
+    ASSERT_EQ(selected_tokens[0].size(), num_tokens_to_keep);  // Should select 3 tokens
+
+    // Validate that the selected tokens are the same for both methods
+    for (size_t i = 0; i < selected_tokens.size(); ++i) {
+        ASSERT_EQ(selected_tokens[i].size(), selected_tokens_origin[i].size());
+        for (size_t j = 0; j < selected_tokens[i].size(); ++j) {
+            EXPECT_EQ(selected_tokens[i][j], selected_tokens_origin[i][j]);
+        }
+    }
 }
 
 TEST_F(FastGreedyDPPTest, VerifyDPPProperties) {

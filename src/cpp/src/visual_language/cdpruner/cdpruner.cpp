@@ -5,6 +5,7 @@
 #include "openvino/openvino.hpp"
 #include <stdexcept>
 #include <chrono>
+#include <iomanip>
 
 namespace ov::genai::cdpruner {
 
@@ -24,6 +25,8 @@ CDPruner::CDPruner(const Config& config)
         std::cout << "  use_negative_relevance: " << (m_config.use_negative_relevance ? "true" : "false") << std::endl;
         std::cout << "  enable_pruning: " << (m_config.enable_pruning ? "true" : "false") << std::endl;
         std::cout << "  use_ops_model: " << (m_config.use_ops_model ? "true (OpenVINO ops)" : "false (traditional)")
+                  << std::endl;
+        std::cout << "  use_dpp_ops_model: " << (m_config.use_dpp_ops_model ? "true (OpenVINO DPP ops)" : "false (traditional DPP)")
                   << std::endl;
         std::cout << "  device: " << m_config.device << std::endl;
     }
@@ -87,7 +90,33 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
                 std::cout << "Step 3: Selecting tokens using DPP..." << std::endl;
             }
             auto dpp_start = std::chrono::high_resolution_clock::now();
-            selected_tokens = m_dpp_selector.select(kernel_matrix, num_tokens_to_keep);
+
+            // Print kernel matrix
+            //if (m_config.pruning_debug_mode) {
+            //    std::cout << "  Kernel matrix:" << std::endl;
+            //    auto shape = kernel_matrix.get_shape();
+            //    const float* data = kernel_matrix.data<const float>();
+            //    
+            //    for (size_t b = 0; b < shape[0]; ++b) {
+            //        std::cout << "    Batch " << b << ":" << std::endl;
+            //        for (size_t i = 0; i < shape[1]; ++i) {
+            //            std::cout << "      [";
+            //            for (size_t j = 0; j < shape[2]; ++j) {
+            //                size_t idx = b * shape[1] * shape[2] + i * shape[2] + j;
+            //                std::cout << std::fixed << std::setprecision(4) << data[idx];
+            //                if (j < shape[2] - 1) std::cout << ", ";
+            //            }
+            //            std::cout << "]" << std::endl;
+            //        }
+            //    }
+            //}
+
+            if (m_config.use_dpp_ops_model) {
+                selected_tokens = m_dpp_selector.select_with_ops_model(kernel_matrix, num_tokens_to_keep);
+            } else {
+                selected_tokens = m_dpp_selector.select(kernel_matrix, num_tokens_to_keep);
+            }
+            
             auto dpp_end = std::chrono::high_resolution_clock::now();
 
             auto dpp_duration = std::chrono::duration_cast<std::chrono::microseconds>(dpp_end - dpp_start);
@@ -129,7 +158,13 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
                 std::cout << "Step 3: Selecting tokens using DPP..." << std::endl;
             }
             auto dpp_start = std::chrono::high_resolution_clock::now();
-            selected_tokens = m_dpp_selector.select(kernel_matrix, num_tokens_to_keep);
+            
+            if (m_config.use_dpp_ops_model) {
+                selected_tokens = m_dpp_selector.select_with_ops_model(kernel_matrix, num_tokens_to_keep);
+            } else {
+                selected_tokens = m_dpp_selector.select(kernel_matrix, num_tokens_to_keep);
+            }
+            
             auto dpp_end = std::chrono::high_resolution_clock::now();
 
             auto dpp_duration = std::chrono::duration_cast<std::chrono::microseconds>(dpp_end - dpp_start);
