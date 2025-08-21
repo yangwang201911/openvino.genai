@@ -91,26 +91,6 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
             }
             auto dpp_start = std::chrono::high_resolution_clock::now();
 
-            // Print kernel matrix
-            //if (m_config.pruning_debug_mode) {
-            //    std::cout << "  Kernel matrix:" << std::endl;
-            //    auto shape = kernel_matrix.get_shape();
-            //    const float* data = kernel_matrix.data<const float>();
-            //    
-            //    for (size_t b = 0; b < shape[0]; ++b) {
-            //        std::cout << "    Batch " << b << ":" << std::endl;
-            //        for (size_t i = 0; i < shape[1]; ++i) {
-            //            std::cout << "      [";
-            //            for (size_t j = 0; j < shape[2]; ++j) {
-            //                size_t idx = b * shape[1] * shape[2] + i * shape[2] + j;
-            //                std::cout << std::fixed << std::setprecision(4) << data[idx];
-            //                if (j < shape[2] - 1) std::cout << ", ";
-            //            }
-            //            std::cout << "]" << std::endl;
-            //        }
-            //    }
-            //}
-
             if (m_config.use_dpp_ops_model) {
                 selected_tokens = m_dpp_selector.select_with_ops_model(kernel_matrix, num_tokens_to_keep);
             } else {

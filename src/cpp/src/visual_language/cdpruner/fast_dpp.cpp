@@ -148,7 +148,7 @@ std::vector<size_t> FastGreedyDPP::select_single_batch(const ov::Tensor& kernel,
     }
     
     // Sort the selected indices for deterministic output
-    std::sort(selected_indices.begin(), selected_indices.end());
+    // std::sort(selected_indices.begin(), selected_indices.end());
     
     return selected_indices;
 }
@@ -314,7 +314,8 @@ std::vector<std::vector<size_t>> FastGreedyDPP::select_with_ops_model(const ov::
     
     // Compile model
     ov::Core core;
-    auto compiled_model = core.compile_model(dpp_model, m_config.device);
+    std::cout << "Compiling DPP model with OpenVINO on device " << m_config.device << std::endl;
+    auto compiled_model = core.compile_model(dpp_model, m_config.device, {{"INFERENCE_PRECISION_HINT", "FP32"}});
     auto infer_request = compiled_model.create_infer_request();
 
     std::vector<std::vector<size_t>> batch_results(batch_size);
@@ -337,7 +338,7 @@ std::vector<std::vector<size_t>> FastGreedyDPP::select_with_ops_model(const ov::
         infer_request.infer();
         
         // Get selected indices
-        auto output = infer_request.get_output_tensor();
+        auto output = infer_request.get_output_tensor(0);
         const int64_t* selected_data = output.data<const int64_t>();
         
         std::vector<size_t> selected_indices;
@@ -346,7 +347,7 @@ std::vector<std::vector<size_t>> FastGreedyDPP::select_with_ops_model(const ov::
         }
         
         // Sort indices for deterministic output
-        std::sort(selected_indices.begin(), selected_indices.end());
+        // std::sort(selected_indices.begin(), selected_indices.end());
         batch_results[b] = selected_indices;
 
         if (m_config.pruning_debug_mode) {
@@ -368,6 +369,8 @@ std::shared_ptr<ov::Model> FastGreedyDPP::create_dpp_selection_model(size_t num_
         ov::element::f32, 
         ov::PartialShape{static_cast<int64_t>(total_tokens), static_cast<int64_t>(total_tokens)}
     );
+    kernel_input->set_friendly_name("kernel_matrix");
+    kernel_input->get_output_tensor(0).set_names({"kernel_matrix"});
     
     auto kernel_matrix = kernel_input;
     
@@ -390,6 +393,10 @@ std::shared_ptr<ov::Model> FastGreedyDPP::create_dpp_selection_model(size_t num_
     std::vector<std::shared_ptr<ov::Node>> selected_indices_nodes;
     std::vector<std::shared_ptr<ov::Node>> orthogonal_vectors; // Store orthogonalized vectors
     std::shared_ptr<ov::Node> current_gains = diagonal_values;
+    
+    // Store intermediate results for debugging/analysis
+    std::vector<std::shared_ptr<ov::Node>> orthogonalized_history; // History of orthogonalized vectors
+    std::vector<std::shared_ptr<ov::Node>> gains_history; // History of gains after each update
     
     // Complete DPP Greedy Selection with Gram-Schmidt Orthogonalization
     for (size_t t = 0; t < num_tokens; ++t) {
@@ -414,36 +421,24 @@ std::shared_ptr<ov::Model> FastGreedyDPP::create_dpp_selection_model(size_t num_
             ov::op::v0::Constant::create(ov::element::i64, {}, {0})
         );
         
-        // 3. Gram-Schmidt Orthogonalization Process
+        // 3. DPP Orthogonalization Process (following fast_dpp.cpp implementation)
+        // Formula: eis = (kernel[selected_idx] - projection) / sqrt(di2s[selected_idx])
         std::shared_ptr<ov::Node> orthogonalized_vector = selected_row;
         
         // Orthogonalize against all previously selected vectors
         for (size_t j = 0; j < orthogonal_vectors.size(); ++j) {
-            // Compute dot product: <selected_row, orthogonal_vectors[j]>
-            auto dot_product = std::make_shared<ov::op::v1::ReduceSum>(
-                std::make_shared<ov::op::v1::Multiply>(orthogonalized_vector, orthogonal_vectors[j]),
-                ov::op::v0::Constant::create(ov::element::i64, {1}, {0}),
-                false
+            // Compute projection: sum(cis[j][selected_idx] * cis[j][:])
+            // Get the j-th orthogonal vector's element at selected_idx position
+            auto prev_vector_at_selected = std::make_shared<ov::op::v8::Gather>(
+                orthogonal_vectors[j],
+                selected_idx,
+                ov::op::v0::Constant::create(ov::element::i64, {}, {0})
             );
             
-            // Compute norm squared of orthogonal_vectors[j]
-            auto norm_squared = std::make_shared<ov::op::v1::ReduceSum>(
-                std::make_shared<ov::op::v1::Multiply>(orthogonal_vectors[j], orthogonal_vectors[j]),
-                ov::op::v0::Constant::create(ov::element::i64, {1}, {0}),
-                false
-            );
-            
-            // Add small epsilon for numerical stability
-            auto epsilon = ov::op::v0::Constant::create(ov::element::f32, {}, {1e-8f});
-            std::shared_ptr<ov::Node> norm_squared_stable = std::make_shared<ov::op::v1::Add>(norm_squared, epsilon);
-            
-            // Compute projection coefficient: dot_product / norm_squared
-            auto projection_coeff = std::make_shared<ov::op::v1::Divide>(dot_product, norm_squared_stable);
-            
-            // Compute projection: projection_coeff * orthogonal_vectors[j]
+            // Compute projection: prev_vector_at_selected * prev_vector
             auto projection = std::make_shared<ov::op::v1::Multiply>(
                 std::make_shared<ov::op::v0::Unsqueeze>(
-                    projection_coeff,
+                    prev_vector_at_selected,
                     ov::op::v0::Constant::create(ov::element::i64, {1}, {0})
                 ),
                 orthogonal_vectors[j]
@@ -456,61 +451,63 @@ std::shared_ptr<ov::Model> FastGreedyDPP::create_dpp_selection_model(size_t num_
             );
         }
         
-        // Store the orthogonalized vector for future iterations
+        // Normalize using sqrt(current_gain[selected_idx]) instead of L2 norm
+        auto selected_gain = std::make_shared<ov::op::v8::Gather>(
+            current_gains,
+            selected_idx,
+            ov::op::v0::Constant::create(ov::element::i64, {}, {0})
+        );
+        
+        auto epsilon_normalize = ov::op::v0::Constant::create(ov::element::f32, {}, {1e-6f});
+        auto selected_gain_stable = std::make_shared<ov::op::v1::Add>(selected_gain, epsilon_normalize);
+        auto norm_factor = std::make_shared<ov::op::v0::Sqrt>(selected_gain_stable);
+        
+        // Normalize: orthogonalized_vector = orthogonalized_vector / sqrt(gain)
+        auto norm_factor_unsqueezed = std::make_shared<ov::op::v0::Unsqueeze>(
+            norm_factor,
+            ov::op::v0::Constant::create(ov::element::i64, {1}, {0})
+        );
+        
+        orthogonalized_vector = std::make_shared<ov::op::v1::Divide>(
+            orthogonalized_vector,
+            norm_factor_unsqueezed
+        );
+        
+        // Store the orthogonalized and normalized vector for future iterations
         orthogonal_vectors.push_back(orthogonalized_vector);
         
-        // 4. Update marginal gains for remaining tokens
+        // Store orthogonalized vector in history for debugging
+        orthogonalized_history.push_back(orthogonalized_vector);
+        
+        // 4. Update marginal gains for remaining tokens (following fast_dpp.cpp)
+        // Formula: di2s -= square(eis) where eis is the orthogonalized vector
         if (t < num_tokens - 1) {
-            // Compute squared norm of orthogonalized vector
-            auto orth_norm_squared = std::make_shared<ov::op::v1::ReduceSum>(
-                std::make_shared<ov::op::v1::Multiply>(orthogonalized_vector, orthogonalized_vector),
-                ov::op::v0::Constant::create(ov::element::i64, {1}, {0}),
-                false
-            );
-            
-            // Add epsilon for numerical stability
-            auto epsilon = ov::op::v0::Constant::create(ov::element::f32, {}, {1e-8f});
-            std::shared_ptr<ov::Node> orth_norm_squared_stable = std::make_shared<ov::op::v1::Add>(orth_norm_squared, epsilon);
-            
             // Create a vector of updated gains for all tokens
             std::vector<std::shared_ptr<ov::Node>> updated_gains_per_token;
             
             for (size_t i = 0; i < total_tokens; ++i) {
-                // Get the i-th row of kernel matrix
-                auto token_idx = ov::op::v0::Constant::create(ov::element::i64, {}, {static_cast<int64_t>(i)});
-                auto token_row = std::make_shared<ov::op::v8::Gather>(
-                    kernel_matrix,
-                    token_idx,
-                    ov::op::v0::Constant::create(ov::element::i64, {}, {0})
-                );
-                
-                // Compute dot product with orthogonalized vector
-                auto dot_prod = std::make_shared<ov::op::v1::ReduceSum>(
-                    std::make_shared<ov::op::v1::Multiply>(token_row, orthogonalized_vector),
-                    ov::op::v0::Constant::create(ov::element::i64, {1}, {0}),
-                    false
-                );
-                
-                // Compute squared dot product
-                auto dot_prod_squared = std::make_shared<ov::op::v1::Multiply>(dot_prod, dot_prod);
-                
-                // Compute gain reduction: dot_prod_squared / orth_norm_squared
-                auto gain_reduction = std::make_shared<ov::op::v1::Divide>(
-                    dot_prod_squared, 
-                    orth_norm_squared_stable
-                );
-                
                 // Get current gain for token i
+                auto token_idx = ov::op::v0::Constant::create(ov::element::i64, {}, {static_cast<int64_t>(i)});
                 auto current_gain_i = std::make_shared<ov::op::v8::Gather>(
                     current_gains,
                     token_idx,
                     ov::op::v0::Constant::create(ov::element::i64, {}, {0})
                 );
                 
-                // Update gain: current_gain - gain_reduction
+                // Get the orthogonalized vector element for token i
+                auto eis_i = std::make_shared<ov::op::v8::Gather>(
+                    orthogonalized_vector,
+                    token_idx,
+                    ov::op::v0::Constant::create(ov::element::i64, {}, {0})
+                );
+                
+                // Compute eis_i^2
+                auto eis_i_squared = std::make_shared<ov::op::v1::Multiply>(eis_i, eis_i);
+                
+                // Update gain: current_gain - eis_i^2
                 auto updated_gain = std::make_shared<ov::op::v1::Subtract>(
                     current_gain_i,
-                    gain_reduction
+                    eis_i_squared
                 );
                 
                 updated_gains_per_token.push_back(updated_gain);
@@ -548,6 +545,13 @@ std::shared_ptr<ov::Model> FastGreedyDPP::create_dpp_selection_model(size_t num_
                 neg_inf_scalar,
                 ov::op::v0::Constant::create(ov::element::i64, {}, {0})
             );
+            
+            // Store current gains in history for debugging
+            gains_history.push_back(current_gains);
+        } else {
+            // For the last token selection, we don't need to update gains
+            // but we still store the final state
+            gains_history.push_back(current_gains);
         }
     }
     
@@ -565,13 +569,43 @@ std::shared_ptr<ov::Model> FastGreedyDPP::create_dpp_selection_model(size_t num_
         0
     );
     
-    // Create result
-    auto result = std::make_shared<ov::op::v0::Result>(selected_indices_concat);
+    // Create intermediate output tensors for debugging
+    std::vector<std::shared_ptr<ov::op::v0::Result>> results;
+    
+    // Main result: selected indices
+    auto main_result = std::make_shared<ov::op::v0::Result>(selected_indices_concat);
+    main_result->set_friendly_name("selected_indices");
+    main_result->get_output_tensor(0).set_names({"selected_indices"});
+    results.push_back(main_result);
+    
+    // Create outputs for orthogonalized vectors history
+    for (size_t i = 0; i < orthogonalized_history.size(); ++i) {
+        auto orth_result = std::make_shared<ov::op::v0::Result>(orthogonalized_history[i]);
+        std::string orth_name = "orthogonalized_vector_" + std::to_string(i);
+        orth_result->set_friendly_name(orth_name);
+        orth_result->get_output_tensor(0).set_names({orth_name});
+        results.push_back(orth_result);
+    }
+    
+    // Create outputs for gains history
+    for (size_t i = 0; i < gains_history.size(); ++i) {
+        auto gains_result = std::make_shared<ov::op::v0::Result>(gains_history[i]);
+        std::string gains_name = "gains_after_step_" + std::to_string(i);
+        gains_result->set_friendly_name(gains_name);
+        gains_result->get_output_tensor(0).set_names({gains_name});
+        results.push_back(gains_result);
+    }
+    
+    // Also output initial gains for comparison
+    auto initial_gains_result = std::make_shared<ov::op::v0::Result>(diagonal_values);
+    initial_gains_result->set_friendly_name("initial_gains");
+    initial_gains_result->get_output_tensor(0).set_names({"initial_gains"});
+    results.push_back(initial_gains_result);
     
     return std::make_shared<ov::Model>(
-        ov::ResultVector{result},
+        ov::ResultVector(results.begin(), results.end()),
         ov::ParameterVector{kernel_input},
-        "CompleteGreedyDPP_Selection_Model"
+        "CompleteGreedyDPP_Selection_Model_WithIntermediates"
     );
 }
 

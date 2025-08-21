@@ -36,12 +36,13 @@ struct Config {
     /// @brief Whether to use OpenVINO ops model for computation
     /// When true, uses integrated OpenVINO ops model for relevance and kernel computation
     /// When false, uses traditional step-by-step computation pipeline
-    bool use_ops_model = true;
+    bool use_ops_model = false;
 
     /// @brief Whether to use OpenVINO ops model for DPP selection
     /// When true, uses OpenVINO ops-based DPP model for token selection
     /// When false, uses traditional CPU-based DPP algorithm
     bool use_dpp_ops_model = true;
+
     /// @brief Compare two Config structures for equality
     /// @param other The other Config to compare with
     /// @return true if all configuration parameters are equal, false otherwise
