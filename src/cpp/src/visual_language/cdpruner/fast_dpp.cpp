@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <iomanip>
+#include <chrono>
 
 namespace ov::genai::cdpruner {
 
@@ -310,17 +311,26 @@ std::vector<std::vector<size_t>> FastGreedyDPP::select_with_ops_model(const ov::
     }
 
     // Create DPP model
+    auto dpp_model_start = std::chrono::high_resolution_clock::now();
     auto dpp_model = create_dpp_selection_model(num_tokens, total_tokens);
+    auto dpp_model_end = std::chrono::high_resolution_clock::now();
+    auto dpp_model_time = std::chrono::duration_cast<std::chrono::microseconds>(dpp_model_end - dpp_model_start);
+    std::cout << "DPP model creation time: " << dpp_model_time.count() / 1000.0 << " ms" << std::endl;
     
     // Compile model
+    auto compile_start = std::chrono::high_resolution_clock::now();
     ov::Core core;
     std::cout << "Compiling DPP model with OpenVINO on device " << m_config.device << std::endl;
     auto compiled_model = core.compile_model(dpp_model, m_config.device, {{"INFERENCE_PRECISION_HINT", "FP32"}});
     auto infer_request = compiled_model.create_infer_request();
+    auto compile_end = std::chrono::high_resolution_clock::now();
+    auto compile_time = std::chrono::duration_cast<std::chrono::microseconds>(compile_end - compile_start);
+    std::cout << "DPP model compilation time: " << compile_time.count() / 1000.0 << " ms" << std::endl;
 
     std::vector<std::vector<size_t>> batch_results(batch_size);
 
     // Process each batch
+    auto total_inference_start = std::chrono::high_resolution_clock::now();
     for (size_t b = 0; b < batch_size; ++b) {
         // Extract single batch kernel [N, N] (no batch dimension)
         ov::Tensor batch_kernel(kernel.get_element_type(), {total_tokens, total_tokens});
@@ -335,7 +345,11 @@ std::vector<std::vector<size_t>> FastGreedyDPP::select_with_ops_model(const ov::
         infer_request.set_input_tensor(batch_kernel);
         
         // Run inference
+        auto inference_start = std::chrono::high_resolution_clock::now();
         infer_request.infer();
+        auto inference_end = std::chrono::high_resolution_clock::now();
+        auto inference_time = std::chrono::duration_cast<std::chrono::microseconds>(inference_end - inference_start);
+        std::cout << "DPP inference time for batch " << b << ": " << inference_time.count() / 1000.0 << " ms" << std::endl;
         
         // Get selected indices
         auto output = infer_request.get_output_tensor(0);
@@ -359,6 +373,9 @@ std::vector<std::vector<size_t>> FastGreedyDPP::select_with_ops_model(const ov::
             std::cout << "]" << std::endl;
         }
     }
+    auto total_inference_end = std::chrono::high_resolution_clock::now();
+    auto total_inference_time = std::chrono::duration_cast<std::chrono::microseconds>(total_inference_end - total_inference_start);
+    std::cout << "Total DPP inference time for " << batch_size << " batches: " << total_inference_time.count() / 1000.0 << " ms" << std::endl;
 
     return batch_results;
 }

@@ -424,11 +424,11 @@ void CDPruner::print_selection_statistics(const ov::Tensor& visual_features,
     
     for (size_t b = 0; b < batch_size && b < 3; ++b) { // Show first 3 batches max
         std::cout << "  Batch " << b << " selected indices: [";
-        for (size_t i = 0; i < selected_tokens[b].size() && i < 10; ++i) { // Show first 10 indices
+        for (size_t i = 0; i < selected_tokens[b].size() && i < 50; ++i) { // Show first 10 indices
             if (i > 0) std::cout << ", ";
             std::cout << selected_tokens[b][i];
         }
-        if (selected_tokens[b].size() > 10) {
+        if (selected_tokens[b].size() > 50) {
             std::cout << ", ...";
         }
         std::cout << "]" << std::endl;
