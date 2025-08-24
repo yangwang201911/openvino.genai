@@ -26,8 +26,8 @@ CDPruner::CDPruner(const Config& config)
         std::cout << "[CDPruner]   relevance_weight: " << m_config.relevance_weight << std::endl;
         std::cout << "[CDPruner]   use_negative_relevance: " << (m_config.use_negative_relevance ? "true" : "false") << std::endl;
         std::cout << "[CDPruner]   enable_pruning: " << (m_config.enable_pruning ? "true" : "false") << std::endl;
-        std::cout << "[CDPruner]   use_ops_model: " << (m_config.use_ops_model ? "true (OpenVINO ops)" : "false (traditional)")
-                  << std::endl;
+        std::cout << "[CDPruner]   use_ops_model: " << (m_config.use_ops_model ? "true (OpenVINO ops)" : "false (traditional)") << std::endl;
+        std::cout << "[CDPruner]   use_dpp_ops_model: " << (m_config.use_dpp_ops_model ? "true (OpenVINO ops)" : "false (traditional)") << std::endl;
         std::cout << "[CDPruner]   device: " << m_config.device << std::endl;
         std::cout << "+----------------------------------------------------------+" << std::endl;
     }
