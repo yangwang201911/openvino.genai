@@ -37,6 +37,16 @@ struct Config {
     /// When true, uses integrated OpenVINO ops model for relevance and kernel computation
     /// When false, uses traditional step-by-step computation pipeline
     bool use_ops_model = false;
+
+    /// @brief Whether to use OpenCL kernel for DPP computation
+    /// When true, uses OpenCL GPU acceleration for DPP selection
+    /// When false, uses traditional CPU-based DPP algorithm
+    bool use_cl_kernel = true;
+
+    /// @brief OpenCL kernel file path for DPP computation
+    /// Only used when use_cl_kernel is true
+    std::string cl_kernel_path = "/home/ywang2/openvino.genai/src/cpp/src/visual_language/cdpruner/dpp_kernel_split.cl";
+    
     /// @brief Compare two Config structures for equality
     /// @param other The other Config to compare with
     /// @return true if all configuration parameters are equal, false otherwise

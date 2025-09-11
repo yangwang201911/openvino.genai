@@ -4,10 +4,54 @@
 #pragma once
 
 #include "cdpruner_config.hpp"
-#include "openvino/runtime/tensor.hpp"
+#include "openvino/openvino.hpp"
 #include <vector>
 
+#ifdef ENABLE_OPENCL_DPP
+#include <CL/opencl.hpp>
+#include <memory>
+#endif
+
 namespace ov::genai::cdpruner {
+
+#ifdef ENABLE_OPENCL_DPP
+/**
+ * @brief OpenCL-accelerated DPP implementation
+ * 
+ * This class provides GPU acceleration for DPP token selection using OpenCL.
+ * It implements the same algorithm as FastGreedyDPP but runs on GPU for better performance.
+ */
+class OpenCLDPP {
+public:
+    explicit OpenCLDPP(const Config& config);
+    ~OpenCLDPP();
+    
+    /**
+     * @brief Select diverse tokens using OpenCL GPU acceleration
+     * @param kernel Conditional kernel matrix [B, N, N]
+     * @param num_tokens Number of tokens to select
+     * @return Selected token indices for each batch [B, T]
+     */
+    std::vector<std::vector<size_t>> select(const ov::Tensor& kernel, size_t num_tokens);
+    
+    /**
+     * @brief Check if OpenCL is available and initialized
+     * @return true if OpenCL is ready for computation
+     */
+    bool is_available() const { return m_initialized; }
+
+private:
+    struct OpenCLState;
+    std::unique_ptr<OpenCLState> m_state;
+    Config m_config;
+    bool m_initialized = false;
+    
+    bool initialize_opencl();
+    bool load_and_compile_kernels();
+    void cleanup_opencl();
+    std::vector<int> run_dpp_split_kernel_impl(const ov::Tensor& kernel, size_t num_tokens);
+};
+#endif // ENABLE_OPENCL_DPP
 
 /**
  * @brief Fast greedy DPP (Determinantal Point Process) algorithm for token selection
@@ -93,6 +137,11 @@ private:
     void update_marginal_gains(size_t iteration, const ov::Tensor& cis, ov::Tensor& di2s);
 
     Config m_config;
+    
+#ifdef ENABLE_OPENCL_DPP
+    /// @brief OpenCL DPP implementation for GPU acceleration
+    mutable std::unique_ptr<OpenCLDPP> m_opencl_dpp;
+#endif
 };
 
 } // namespace ov::genai::cdpruner 

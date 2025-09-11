@@ -9,6 +9,14 @@
 #include <stdexcept>
 #include <iostream>
 #include <iomanip>
+#include <fstream>
+#include <sstream>
+#include <cstring>
+
+#ifdef ENABLE_OPENCL_DPP
+#include <map>
+#include <memory>
+#endif
 
 // SIMD headers
 #ifdef _MSC_VER
@@ -100,6 +108,25 @@ std::vector<std::vector<size_t>> FastGreedyDPP::select(const ov::Tensor& kernel,
     if (num_tokens > total_tokens) {
         throw std::invalid_argument("Cannot select more tokens than available");
     }
+
+#ifdef ENABLE_OPENCL_DPP
+    // Try OpenCL GPU acceleration if enabled and available
+    if (m_config.use_cl_kernel) {
+        // Initialize OpenCL DPP if not already done
+        if (!m_opencl_dpp) {
+            m_opencl_dpp = std::make_unique<OpenCLDPP>(m_config);
+        }
+        
+        // Use OpenCL if available
+        if (m_opencl_dpp && m_opencl_dpp->is_available()) {
+            return m_opencl_dpp->select(kernel, num_tokens);
+        } else {
+            if (m_config.pruning_debug_mode) {
+                std::cout << "[FastGreedyDPP] OpenCL not available, falling back to CPU implementation" << std::endl;
+            }
+        }
+    }
+#endif
     
     // Debug output: report which SIMD instruction set is being used
     {
@@ -368,4 +395,292 @@ float FastGreedyDPP::compute_determinant_approximation(const ov::Tensor& kernel,
     return det_approx;
 }
 
-} // namespace ov::genai::cdpruner 
+} // namespace ov::genai::cdpruner
+
+// ================================ OpenCL Implementation ================================
+
+#ifdef ENABLE_OPENCL_DPP
+
+namespace ov::genai::cdpruner {
+
+/**
+ * @brief OpenCL context and state management
+ */
+struct OpenCLDPP::OpenCLState {
+    cl::Context context;
+    cl::CommandQueue queue;
+    cl::Device device;
+    cl::Program program;
+    std::map<std::string, cl::Kernel> kernels;
+    bool initialized = false;
+    
+    cl::Kernel get_kernel(const std::string& name) {
+        auto it = kernels.find(name);
+        if (it != kernels.end()) {
+            return it->second;
+        }
+        
+        // Create kernel if not exists
+        cl::Kernel kernel(program, name.c_str());
+        kernels[name] = kernel;
+        return kernel;
+    }
+};
+
+OpenCLDPP::OpenCLDPP(const Config& config) : m_config(config), m_state(std::make_unique<OpenCLState>()) {
+    m_initialized = initialize_opencl();
+}
+
+OpenCLDPP::~OpenCLDPP() {
+    cleanup_opencl();
+}
+
+std::vector<std::vector<size_t>> OpenCLDPP::select(const ov::Tensor& kernel, size_t num_tokens) {
+    if (!m_initialized) {
+        throw std::runtime_error("OpenCL DPP not initialized");
+    }
+    
+    // Validate input tensor
+    auto shape = kernel.get_shape();
+    if (shape.size() != 3) {
+        throw std::invalid_argument("Kernel must be 3D tensor [B, N, N]");
+    }
+    
+    size_t batch_size = shape[0];
+    size_t total_tokens = shape[1];
+    
+    if (shape[1] != shape[2]) {
+        throw std::invalid_argument("Kernel matrix must be square [B, N, N]");
+    }
+    
+    if (num_tokens > total_tokens) {
+        throw std::invalid_argument("Cannot select more tokens than available");
+    }
+    
+    // Use OpenCL DPP implementation directly with ov::Tensor
+    auto opencl_results = run_dpp_split_kernel_impl(kernel, num_tokens);
+    
+    // Convert results back to expected format
+    std::vector<std::vector<size_t>> batch_results(batch_size);
+    size_t tokens_per_batch = opencl_results.size() / batch_size;
+    
+    for (size_t b = 0; b < batch_size; ++b) {
+        batch_results[b].reserve(tokens_per_batch);
+        for (size_t t = 0; t < tokens_per_batch; ++t) {
+            size_t idx = b * tokens_per_batch + t;
+            if (idx < opencl_results.size() && opencl_results[idx] >= 0) {
+                batch_results[b].push_back(static_cast<size_t>(opencl_results[idx]));
+            }
+        }
+    }
+    
+    return batch_results;
+}
+
+bool OpenCLDPP::initialize_opencl() {
+    try {
+        std::vector<cl::Platform> platforms;
+        cl::Platform::get(&platforms);
+        
+        if (platforms.empty()) {
+            if (m_config.pruning_debug_mode) {
+                std::cerr << "[OpenCLDPP] No OpenCL platforms found" << std::endl;
+            }
+            return false;
+        }
+        
+        // Use default device
+        m_state->device = cl::Device::getDefault();
+        m_state->context = cl::Context(m_state->device);
+        m_state->queue = cl::CommandQueue(m_state->context, m_state->device);
+        
+        if (m_config.pruning_debug_mode) {
+            std::string device_name;
+            m_state->device.getInfo(CL_DEVICE_NAME, &device_name);
+            std::cout << "[OpenCLDPP] Using OpenCL device: " << device_name << std::endl;
+        }
+        
+        return load_and_compile_kernels();
+    } catch (const std::exception& e) {
+        if (m_config.pruning_debug_mode) {
+            std::cerr << "[OpenCLDPP] OpenCL initialization failed: " << e.what() << std::endl;
+        }
+        return false;
+    }
+}
+
+bool OpenCLDPP::load_and_compile_kernels() {
+    try {
+        if (m_config.cl_kernel_path.empty()) {
+            if (m_config.pruning_debug_mode) {
+                std::cerr << "[OpenCLDPP] Kernel path not specified" << std::endl;
+            }
+            return false;
+        }
+        
+        // Load kernel source from file
+        std::ifstream kernel_file(m_config.cl_kernel_path);
+        if (!kernel_file.is_open()) {
+            if (m_config.pruning_debug_mode) {
+                std::cerr << "[OpenCLDPP] Failed to open kernel file: " << m_config.cl_kernel_path << std::endl;
+            }
+            return false;
+        }
+        
+        std::string kernel_source((std::istreambuf_iterator<char>(kernel_file)),
+                                  std::istreambuf_iterator<char>());
+        kernel_file.close();
+        
+        if (m_config.pruning_debug_mode) {
+            std::cout << "[OpenCLDPP] Loaded kernel source (" << kernel_source.length() << " chars) from: " 
+                      << m_config.cl_kernel_path << std::endl;
+        }
+        
+        // Compile program
+        cl::Program::Sources sources;
+        sources.push_back({kernel_source.c_str(), kernel_source.length()});
+        
+        m_state->program = cl::Program(m_state->context, sources);
+        cl_int result = m_state->program.build({m_state->device});
+        
+        if (result != CL_SUCCESS) {
+            // Get build log for debugging
+            std::string build_log;
+            m_state->program.getBuildInfo(m_state->device, CL_PROGRAM_BUILD_LOG, &build_log);
+            if (m_config.pruning_debug_mode) {
+                std::cerr << "[OpenCLDPP] Kernel compilation failed with error: " << result << std::endl;
+                std::cerr << "[OpenCLDPP] Build log: " << build_log << std::endl;
+            }
+            return false;
+        }
+        
+        if (m_config.pruning_debug_mode) {
+            std::cout << "[OpenCLDPP] Kernel compilation successful" << std::endl;
+        }
+        
+        return true;
+    } catch (const std::exception& e) {
+        if (m_config.pruning_debug_mode) {
+            std::cerr << "[OpenCLDPP] Kernel compilation failed: " << e.what() << std::endl;
+        }
+        return false;
+    }
+}
+
+void OpenCLDPP::cleanup_opencl() {
+    // Cleanup is handled automatically by cl::* destructors
+}
+
+std::vector<int> OpenCLDPP::run_dpp_split_kernel_impl(const ov::Tensor& kernel, size_t selected_token_num) {
+    float numerical_threshold = m_config.numerical_threshold;
+    
+    // Get tensor dimensions from ov::Tensor
+    auto shape = kernel.get_shape();
+    size_t batch_size = shape[0];
+    size_t total_tokens_num = shape[1];
+    
+    if (selected_token_num == 0) {
+        selected_token_num = static_cast<size_t>(total_tokens_num * 0.6);
+    }
+    
+    std::vector<int> output_ids(selected_token_num * batch_size, -1);
+    
+    // Prepare initial diagonal values from ov::Tensor
+    std::vector<float> vec_di2s(total_tokens_num * batch_size);
+    const float* kernel_data = kernel.data<const float>();
+    
+    for (size_t b = 0; b < batch_size; b++) {
+        size_t offset_base = b * total_tokens_num * total_tokens_num;
+        for (size_t i = 0; i < total_tokens_num; i++) {
+            // Access diagonal elements from ov::Tensor data
+            size_t offset = offset_base + i * total_tokens_num + i;
+            vec_di2s[b * total_tokens_num + i] = kernel_data[offset];
+        }
+    }
+    
+    // Create OpenCL buffers
+    cl::Buffer buffer_mat(m_state->context, CL_MEM_READ_ONLY, kernel.get_byte_size());
+    cl::Buffer buffer_di2s(m_state->context, CL_MEM_READ_WRITE, 
+                          sizeof(float) * total_tokens_num * batch_size);
+    cl::Buffer buffer_cis(m_state->context, CL_MEM_READ_WRITE, 
+                         sizeof(float) * selected_token_num * total_tokens_num * batch_size);
+    cl::Buffer buffer_output_ids(m_state->context, CL_MEM_READ_WRITE, 
+                                sizeof(int) * selected_token_num * batch_size);
+    cl::Buffer buffer_best_id(m_state->context, CL_MEM_READ_WRITE, sizeof(int) * batch_size);
+    
+    // Use merged kernel approach (ENABLE_KERNEL_MERGE = 1)
+    auto merged_kernel = m_state->get_kernel("update_step_2_3");
+    cl::NDRange gws = cl::NDRange(batch_size, (total_tokens_num + 15) / 16 * 16, 1);
+    cl::NDRange lws = cl::NDRange(1, std::min(total_tokens_num, static_cast<size_t>(16)), 1);
+    
+    // Set kernel arguments
+    merged_kernel.setArg(0, buffer_mat);
+    merged_kernel.setArg(1, static_cast<int>(total_tokens_num));
+    merged_kernel.setArg(2, buffer_best_id);
+    // arg 3 will be set in the loop (iteration)
+    merged_kernel.setArg(4, buffer_cis);
+    merged_kernel.setArg(5, buffer_di2s);
+    merged_kernel.setArg(6, numerical_threshold);
+    merged_kernel.setArg(7, static_cast<int>(selected_token_num));
+    merged_kernel.setArg(8, buffer_output_ids);
+    merged_kernel.setArg(9, sizeof(float) * lws[1], nullptr); // local memory for reduction
+    merged_kernel.setArg(10, sizeof(int) * lws[1], nullptr);   // local memory for argmax
+    
+    if (m_config.pruning_debug_mode) {
+        std::cout << "[OpenCLDPP] Global work size: [" << gws[0] << ", " << gws[1] << ", " << gws[2] << "]" << std::endl;
+        std::cout << "[OpenCLDPP] Local work size: [" << lws[0] << ", " << lws[1] << ", " << lws[2] << "]" << std::endl;
+    }
+    
+    // Initialize buffers
+    m_state->queue.enqueueWriteBuffer(buffer_di2s, CL_TRUE, 0, 
+                                    sizeof(float) * total_tokens_num * batch_size, vec_di2s.data());
+    m_state->queue.enqueueWriteBuffer(buffer_mat, CL_TRUE, 0, 
+                                    kernel.get_byte_size(), kernel_data);
+    
+    // Main DPP algorithm loop using OpenCL kernels
+    std::vector<cl::Event> eventList;
+    for (size_t t = 0; t < selected_token_num; ++t) {
+        cl::Event event;
+        
+        // Set current iteration
+        merged_kernel.setArg(3, static_cast<int>(t));
+        
+        // Execute the merged kernel (combines argmax, update orthogonal vector, and update marginal gains)
+        m_state->queue.enqueueNDRangeKernel(merged_kernel, cl::NullRange, gws, lws, &eventList, &event);
+        eventList.push_back(event);
+        
+        if (m_config.pruning_debug_mode && t < 5) {
+            m_state->queue.finish(); // Wait for completion for debugging
+            std::cout << "[OpenCLDPP] Completed iteration " << t << "/" << selected_token_num << std::endl;
+        }
+    }
+    
+    // Wait for all kernels to complete
+    m_state->queue.finish();
+    
+    // Read back results
+    m_state->queue.enqueueReadBuffer(buffer_output_ids, CL_TRUE, 0, 
+                                   sizeof(int) * selected_token_num * batch_size, output_ids.data());
+    
+    if (m_config.pruning_debug_mode) {
+        std::cout << "[OpenCLDPP] DPP selection completed with " << selected_token_num << " tokens" << std::endl;
+        
+        // Print first few selected token IDs for debugging
+        std::cout << "[OpenCLDPP] Selected tokens (first batch): [";
+        size_t print_count = std::min(selected_token_num, static_cast<size_t>(10));
+        for (size_t i = 0; i < print_count; ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << output_ids[i];
+        }
+        if (selected_token_num > 10) {
+            std::cout << ", ... (" << (selected_token_num - 10) << " more)";
+        }
+        std::cout << "]" << std::endl;
+    }
+    
+    return output_ids;
+}
+
+} // namespace ov::genai::cdpruner
+
+#endif // ENABLE_OPENCL_DPP 

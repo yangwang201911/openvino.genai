@@ -311,10 +311,20 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
         auto total_duration = std::chrono::duration_cast<std::chrono::microseconds>(overall_end - overall_start);
 
         std::cout << "\n+--- CDPruner Performance Summary -------------------------+" << std::endl;
-        std::cout << "[CDPruner] Computation mode: "
-                  << (m_config.use_ops_model ? (std::string("OV Model by ") + m_config.device)
-                                             : "Traditional Step-by-Step by CPU")
-                  << std::endl;
+        std::string computation_mode;
+        if (m_config.use_ops_model) {
+            computation_mode = std::string("OV Model by ") + m_config.device;
+        } else {
+            computation_mode = "Traditional Step-by-Step by CPU";
+        }
+        
+#ifdef ENABLE_OPENCL_DPP
+        if (m_config.use_cl_kernel) {
+            computation_mode += " + OpenCL GPU DPP";
+        }
+#endif
+        
+        std::cout << "[CDPruner] Computation mode: " << computation_mode << std::endl;
         std::cout << "[CDPruner] Total processing time: " << total_duration.count() << " us (" << (total_duration.count() / 1000.0)
                   << " ms)" << std::endl;
 
