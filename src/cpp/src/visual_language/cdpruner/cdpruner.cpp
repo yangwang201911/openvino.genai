@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <thread>
 #include <future>
+#include <cstring>
 
 namespace ov::genai::cdpruner {
 
@@ -41,6 +42,133 @@ std::vector<size_t> CDPruner::perform_parallel_dpp_selection(
         std::cout << "[CDPruner] Step 3: Selecting tokens using parallel DPP..." << std::endl;
         std::cout << "[CDPruner]   Selecting " << tokens_first_half << " tokens from first half, "
                   << tokens_second_half << " tokens from second half in parallel" << std::endl;
+    }
+#ifdef ENABLE_OPENCL_DPP
+    // Check if OpenCL DPP is enabled and available
+    if (m_config.use_cl_kernel) {
+        if (m_config.pruning_debug_mode) {
+            std::cout << "[CDPruner] Using OpenCL DPP for merged batch processing..." << std::endl;
+        }
+        
+        // Get tensor shapes
+        auto first_shape = kernel_matrix_first.get_shape();
+        auto second_shape = kernel_matrix_second.get_shape();
+        
+        // Verify shapes are compatible
+        if (first_shape[1] != first_shape[2] || second_shape[1] != second_shape[2]) {
+            throw std::invalid_argument("Kernel matrices must be square");
+        }
+        
+        ov::Tensor merged_kernel;
+        std::vector<size_t> tokens_per_batch = {tokens_first_half, tokens_second_half};
+        
+        // Check if both matrices have the same size - can avoid copying
+        if (first_shape[1] == second_shape[1] && first_shape[2] == second_shape[2]) {
+            if (m_config.pruning_debug_mode) {
+                std::cout << "[CDPruner] Matrices have same size, creating batch tensor directly..." << std::endl;
+            }
+            
+            // Create batch tensor with shape [2, tokens, tokens]
+            size_t token_count = first_shape[1];
+            size_t batch_size = 2;
+            size_t total_elements = batch_size * token_count * token_count;
+            
+            // Allocate contiguous memory for both matrices
+            merged_kernel = ov::Tensor(ov::element::f32, {batch_size, token_count, token_count});
+            float* merged_data = merged_kernel.data<float>();
+            
+            // Copy data efficiently using memcpy
+            const float* first_data = kernel_matrix_first.data<const float>();
+            const float* second_data = kernel_matrix_second.data<const float>();
+            
+            size_t matrix_size_bytes = token_count * token_count * sizeof(float);
+            std::memcpy(merged_data, first_data, matrix_size_bytes);  // Copy first matrix to batch 0
+            std::memcpy(merged_data + token_count * token_count, second_data, matrix_size_bytes);  // Copy second matrix to batch 1
+            
+        } else {
+            if (m_config.pruning_debug_mode) {
+                std::cout << "[CDPruner] Matrices have different sizes, padding to max size..." << std::endl;
+            }
+            
+            // Create merged tensor with padding for different sizes
+            size_t max_tokens = std::max(first_shape[1], second_shape[1]);
+            merged_kernel = ov::Tensor(ov::element::f32, {2, max_tokens, max_tokens});
+            float* merged_data = merged_kernel.data<float>();
+            
+            // Initialize with zeros
+            std::memset(merged_data, 0, merged_kernel.get_byte_size());
+            
+            const float* first_data = kernel_matrix_first.data<const float>();
+            const float* second_data = kernel_matrix_second.data<const float>();
+            
+            // Copy first matrix with optimized row copying
+            for (size_t i = 0; i < first_shape[1]; ++i) {
+                size_t src_offset = i * first_shape[2];
+                size_t dst_offset = 0 * max_tokens * max_tokens + i * max_tokens;
+                std::memcpy(merged_data + dst_offset, first_data + src_offset, first_shape[2] * sizeof(float));
+            }
+            
+            // Copy second matrix with optimized row copying
+            for (size_t i = 0; i < second_shape[1]; ++i) {
+                size_t src_offset = i * second_shape[2];
+                size_t dst_offset = 1 * max_tokens * max_tokens + i * max_tokens;
+                std::memcpy(merged_data + dst_offset, second_data + src_offset, second_shape[2] * sizeof(float));
+            }
+        }
+        
+        // Use DPP selector with merged tensor
+        // Need to call with total tokens to select for both halves
+        auto selected_batches = m_dpp_selector.select(merged_kernel, num_tokens_to_keep);
+        
+        // Split results back into two halves
+        std::vector<size_t> selected_first, selected_second;
+        
+        if (selected_batches.size() >= 2) {
+            // Results from first batch (first half)
+            for (size_t idx : selected_batches[0]) {
+                if (idx < first_shape[1] && selected_first.size() < tokens_first_half) {
+                    selected_first.push_back(idx);
+                }
+            }
+            
+            // Results from second batch (second half)
+            for (size_t idx : selected_batches[1]) {
+                if (idx < second_shape[1] && selected_second.size() < tokens_second_half) {
+                    selected_second.push_back(idx);
+                }
+            }
+        }
+        
+        // Merge results: adjust indices for second half
+        std::vector<size_t> merged_selection;
+        merged_selection.reserve(selected_first.size() + selected_second.size());
+        
+        // Add first half selections (indices unchanged)
+        for (size_t idx : selected_first) {
+            merged_selection.push_back(idx);
+        }
+        
+        // Add second half selections (adjust indices by split_point)
+        for (size_t idx : selected_second) {
+            merged_selection.push_back(idx + split_point);
+        }
+        
+        // Sort final result to maintain order
+        std::sort(merged_selection.begin(), merged_selection.end());
+        
+        auto dpp_end = std::chrono::high_resolution_clock::now();
+        dpp_duration = std::chrono::duration_cast<std::chrono::microseconds>(dpp_end - dpp_start);
+        
+        if (m_config.pruning_debug_mode) {
+            std::cout << "[CDPruner]   OpenCL DPP selection took: " << dpp_duration.count() << " us" << std::endl;
+        }
+        
+        return merged_selection;
+    }
+#endif
+    // Fallback to parallel CPU processing
+    if (m_config.pruning_debug_mode) {
+        std::cout << "[CDPruner] Using parallel CPU DPP processing..." << std::endl;
     }
     
     // Launch parallel tasks for DPP selection
