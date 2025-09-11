@@ -104,9 +104,10 @@ std::vector<std::vector<size_t>> FastGreedyDPP::select(const ov::Tensor& kernel,
     if (shape[1] != shape[2]) {
         throw std::invalid_argument("Kernel matrix must be square [B, N, N]");
     }
-    
-    if (num_tokens > total_tokens) {
-        throw std::invalid_argument("Cannot select more tokens than available");
+
+    if (num_tokens / batch_size > total_tokens) {
+        throw std::invalid_argument("Cannot select more tokens [" + std::to_string(num_tokens / batch_size) + "] than available [" +
+                                    std::to_string(total_tokens) + "]");
     }
 
 #ifdef ENABLE_OPENCL_DPP
@@ -452,11 +453,12 @@ std::vector<std::vector<size_t>> OpenCLDPP::select(const ov::Tensor& kernel, siz
     if (shape[1] != shape[2]) {
         throw std::invalid_argument("Kernel matrix must be square [B, N, N]");
     }
-    
-    if (num_tokens > total_tokens) {
-        throw std::invalid_argument("Cannot select more tokens than available");
+
+    if (num_tokens / batch_size > total_tokens) {
+        throw std::invalid_argument("Cannot select more tokens [" + std::to_string(num_tokens / batch_size) + "] than available [" +
+                                    std::to_string(total_tokens) + "]");
     }
-    
+
     // Use OpenCL DPP implementation directly with ov::Tensor
     auto opencl_results = run_dpp_split_kernel_impl(kernel, num_tokens);
     
