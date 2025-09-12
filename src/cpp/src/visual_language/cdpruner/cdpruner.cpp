@@ -255,6 +255,8 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
     try {
         std::vector<std::vector<size_t>> selected_tokens;
         std::chrono::microseconds dpp_duration{0}; // Initialize DPP timing variable
+        std::chrono::microseconds relevance_duration{0}; // Initialize relevance timing variable
+        std::chrono::microseconds kernel_duration{0}; // Initialize kernel building timing variable
 
         if (m_config.pruning_debug_mode) {
             std::cout << "\n+--- CDPruner Processing Steps ----------------------+" << std::endl;
@@ -337,6 +339,9 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
             
             auto computation_end = std::chrono::high_resolution_clock::now();
             auto computation_duration = std::chrono::duration_cast<std::chrono::microseconds>(computation_end - computation_start);
+            
+            // For OV model approach, this includes both relevance computation and kernel building
+            kernel_duration = computation_duration;
 
             if (m_config.pruning_debug_mode) {
                 std::cout << "[CDPruner]   Kernel building via ov model took: " << computation_duration.count() << " us" << std::endl;
@@ -355,7 +360,7 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
                 ov::Tensor relevance_scores_second = m_relevance_calc.compute(visual_second_half, text_features);
                 
                 auto relevance_end = std::chrono::high_resolution_clock::now();
-                auto relevance_duration = std::chrono::duration_cast<std::chrono::microseconds>(relevance_end - relevance_start);
+                relevance_duration = std::chrono::duration_cast<std::chrono::microseconds>(relevance_end - relevance_start);
                 
                 if (m_config.pruning_debug_mode) {
                     std::cout << "[CDPruner]   Relevance computation took: " << relevance_duration.count() << " us" << std::endl;
@@ -371,7 +376,7 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
                 kernel_matrix_second = m_kernel_builder.build(visual_second_half, relevance_scores_second);
                 
                 auto kernel_end = std::chrono::high_resolution_clock::now();
-                auto kernel_duration = std::chrono::duration_cast<std::chrono::microseconds>(kernel_end - kernel_start);
+                kernel_duration = std::chrono::duration_cast<std::chrono::microseconds>(kernel_end - kernel_start);
 
                 if (m_config.pruning_debug_mode) {
                     std::cout << "[CDPruner]   Kernel building took: " << kernel_duration.count() << " us" << std::endl;
@@ -381,7 +386,7 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
                 ov::Tensor relevance_scores = m_relevance_calc.compute(visual_first_half, text_features);
                 
                 auto relevance_end = std::chrono::high_resolution_clock::now();
-                auto relevance_duration = std::chrono::duration_cast<std::chrono::microseconds>(relevance_end - relevance_start);
+                relevance_duration = std::chrono::duration_cast<std::chrono::microseconds>(relevance_end - relevance_start);
                 
                 if (m_config.pruning_debug_mode) {
                     std::cout << "[CDPruner]   Relevance computation took: " << relevance_duration.count() << " us" << std::endl;
@@ -396,7 +401,7 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
                 kernel_matrix_first = m_kernel_builder.build(visual_first_half, relevance_scores);
                 
                 auto kernel_end = std::chrono::high_resolution_clock::now();
-                auto kernel_duration = std::chrono::duration_cast<std::chrono::microseconds>(kernel_end - kernel_start);
+                kernel_duration = std::chrono::duration_cast<std::chrono::microseconds>(kernel_end - kernel_start);
 
                 if (m_config.pruning_debug_mode) {
                     std::cout << "[CDPruner]   Kernel building took: " << kernel_duration.count() << " us" << std::endl;
@@ -460,6 +465,17 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
         size_t total_input_tokens = visual_shape[0] * visual_shape[1];
         size_t total_output_tokens = visual_shape[0] * num_tokens_to_keep;
         std::cout << "[CDPruner] Performance Metrics:" << std::endl;
+        
+        // Show timing breakdown based on computation mode
+        if (m_config.use_ops_model) {
+            // For OV model approach, kernel_duration includes both relevance and kernel building
+            std::cout << "[CDPruner]   Kernel computation time: " << kernel_duration.count() << " us (" << (kernel_duration.count() / 1000.0) << " ms)" << std::endl;
+        } else {
+            // For traditional approach, show separate timings
+            std::cout << "[CDPruner]   Relevance computation time: " << relevance_duration.count() << " us (" << (relevance_duration.count() / 1000.0) << " ms)" << std::endl;
+            std::cout << "[CDPruner]   Kernel building time: " << kernel_duration.count() << " us (" << (kernel_duration.count() / 1000.0) << " ms)" << std::endl;
+        }
+        
         std::cout << "[CDPruner]   DPP selection time: " << dpp_duration.count() << " us (" << (dpp_duration.count() / 1000.0) << " ms)" << std::endl;
         std::cout << "[CDPruner]   Overall throughput: " << (static_cast<double>(total_input_tokens) / total_duration.count() * 1000000) << " input tokens/sec" << std::endl;
         std::cout << "[CDPruner]   Pruning efficiency: " << (static_cast<double>(total_output_tokens) / total_duration.count() * 1000000) << " output tokens/sec" << std::endl;

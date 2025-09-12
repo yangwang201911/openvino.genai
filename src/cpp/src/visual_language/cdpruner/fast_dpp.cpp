@@ -613,7 +613,7 @@ std::vector<int> OpenCLDPP::run_dpp_split_kernel_impl(const ov::Tensor& kernel, 
     cl::Buffer buffer_best_id(m_state->context, CL_MEM_READ_WRITE, sizeof(int) * batch_size);
     
     // Use merged kernel approach (ENABLE_KERNEL_MERGE = 1)
-    auto merged_kernel = m_state->get_kernel("update_step_2_3");
+    auto merged_kernel = m_state->get_kernel("dpp_impl");
     cl::NDRange gws = cl::NDRange(batch_size, (total_tokens_num + 15) / 16 * 16, 1);
     cl::NDRange lws = cl::NDRange(1, std::min(total_tokens_num, static_cast<size_t>(16)), 1);
     
