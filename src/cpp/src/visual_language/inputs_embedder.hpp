@@ -7,6 +7,7 @@
 #include <vector>
 #include <filesystem>
 #include <regex>
+#include <optional>
 
 #include "utils.hpp"
 #include "lm_encoding.hpp"
@@ -106,6 +107,15 @@ public:
 private:
     class IInputsEmbedder {
     protected:
+        struct PruningResult {
+            ov::Tensor merged_embeddings;
+            ov::Tensor pruned_visual_embeddings;
+            ov::Tensor adjusted_position_ids;
+            size_t original_visual_tokens = 0;
+            size_t pruned_visual_tokens = 0;
+            int64_t rope_delta = 0;
+        };
+
         // VLM config
         VLMConfig m_vlm_config;
         // An encoder to infer embeddings of an image.
@@ -237,6 +247,56 @@ private:
             size_t base_id,
             size_t n_images
         ) const;
+
+        virtual std::vector<int64_t> extract_instruction_tokens(const ov::Tensor& input_ids,
+                                                                 int64_t image_pad_token_id,
+                                                                 int64_t vision_start_token_id,
+                                                                 int64_t vision_end_token_id) {
+            // Default implementation returns empty instruction set; override in models needing CDPruner context
+            return {};
+        }
+
+        virtual ov::Tensor extract_text_features_for_cdpruner(const ov::Tensor& input_ids,
+                                                              int64_t image_pad_token_id,
+                                                              int64_t vision_start_token_id,
+                                                              int64_t vision_end_token_id) {
+            // Default implementation returns an empty tensor; derived classes override when CDPruner support is needed
+            return ov::Tensor();
+        }
+
+        virtual std::vector<ov::Tensor> convert_visual_features(const ov::Tensor& merged_image_embeddings,
+                                                                size_t image_num) {
+            // Default implementation provides no visual features; override to support CDPruner flows
+            return {};
+        }
+
+        virtual ov::Tensor adjust_position_ids_for_pruning(const ov::Tensor& original_position_ids,
+                                                           const ov::Tensor& input_ids,
+                                                           size_t original_visual_tokens,
+                                                           size_t pruned_visual_tokens,
+                                                           int64_t vision_start_token_id,
+                                                           int64_t image_pad_token_id) {
+            // Default implementation keeps original position ids; override when pruning needs adjustments
+            return original_position_ids;
+        }
+
+        virtual ov::Tensor merge_text_and_image_embeddings_with_pruning(const ov::Tensor& input_ids,
+                                                                        const ov::Tensor& text_embeds,
+                                                                        const ov::Tensor& pruned_vision_embeds,
+                                                                        int64_t image_pad_token_id,
+                                                                        size_t original_visual_tokens,
+                                                                        size_t num_images) {
+            OPENVINO_THROW("merge_text_and_image_embeddings_with_pruning is not implemented for this VLM");
+        }
+
+        std::optional<PruningResult> apply_visual_token_pruning(const ov::Tensor& input_ids,
+                                                                const ov::Tensor& text_embeds,
+                                                                const ov::Tensor& original_position_ids,
+                                                                const ov::Tensor& merged_vision_embeds,
+                                                                int64_t vision_start_token_id,
+                                                                int64_t vision_end_token_id,
+                                                                int64_t image_pad_token_id,
+                                                                size_t num_images);
 
         /**
         * @brief Converts a vector of batched images ([NHWC]) into a vector of individual image tensors ([1HWC]).

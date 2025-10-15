@@ -4,6 +4,9 @@
 #include "openvino/genai/visual_language/perf_metrics.hpp"
 #include "visual_language/inputs_embedder.hpp"
 
+#include <algorithm>
+#include <cstring>
+
 #include "visual_language/clip.hpp"
 #include "visual_language/vision_encoder.hpp"
 #include "visual_language/embedding_model.hpp"
@@ -140,6 +143,107 @@ ov::Tensor InputsEmbedder::IInputsEmbedder::get_encoded_input_ids(const std::str
     m_kv_cache_state.add_inputs(new_input_ids);
 
     return new_input_ids;
+}
+
+std::optional<InputsEmbedder::IInputsEmbedder::PruningResult> InputsEmbedder::IInputsEmbedder::apply_visual_token_pruning(
+    const ov::Tensor& input_ids,
+    const ov::Tensor& text_embeds,
+    const ov::Tensor& original_position_ids,
+    const ov::Tensor& merged_vision_embeds,
+    int64_t vision_start_token_id,
+    int64_t vision_end_token_id,
+    int64_t image_pad_token_id,
+    size_t num_images) {
+    if (!m_vision_encoder || !m_vision_encoder->is_pruning_available()) {
+        return std::nullopt;
+    }
+
+    auto pruning_config = m_vision_encoder->get_pruning_config();
+    if (!pruning_config.has_value() || pruning_config->pruning_ratio <= 0) {
+        return std::nullopt;
+    }
+
+    const auto& vision_shape = merged_vision_embeds.get_shape();
+    if (vision_shape.size() != 2) {
+        OPENVINO_THROW("Merged vision embeddings must have shape [num_tokens, hidden_size] before pruning");
+    }
+
+    size_t original_visual_tokens = vision_shape.at(0);
+    if (original_visual_tokens == 0 || num_images == 0) {
+        return std::nullopt;
+    }
+
+    ov::Tensor text_features = extract_text_features_for_cdpruner(input_ids,
+                                                                  image_pad_token_id,
+                                                                  vision_start_token_id,
+                                                                  vision_end_token_id);
+
+    size_t chunk_count = pruning_config->enable_frame_chunking ? std::max<size_t>(1, num_images) : static_cast<size_t>(1);
+    auto visual_features = convert_visual_features(merged_vision_embeds, chunk_count);
+    if (visual_features.empty()) {
+        return std::nullopt;
+    }
+
+    ov::Tensor pruned_visual_features = m_vision_encoder->apply_pruning(visual_features, text_features);
+    if (pruned_visual_features.get_size() == 0) {
+        return std::nullopt;
+    }
+
+    const auto& pruned_shape = pruned_visual_features.get_shape();
+    OPENVINO_ASSERT(pruned_shape.size() == 3, "Pruned visual features must be 3D tensor [1, num_tokens, hidden_size]");
+
+    size_t pruned_visual_tokens = pruned_shape.at(1);
+    size_t hidden_size = pruned_shape.at(2);
+
+    if (pruned_visual_tokens == 0) {
+        return std::nullopt;
+    }
+
+    if (pruned_visual_tokens >= original_visual_tokens) {
+        // No pruning happened; keep original flow
+        return std::nullopt;
+    }
+
+    // Flatten from [1, num_tokens, hidden] to [num_tokens, hidden]
+    ov::Tensor pruned_visual_embeddings(pruned_visual_features.get_element_type(), {pruned_visual_tokens, hidden_size});
+    std::memcpy(pruned_visual_embeddings.data(), pruned_visual_features.data(), pruned_visual_embeddings.get_byte_size());
+
+    ov::Tensor adjusted_position_ids = adjust_position_ids_for_pruning(original_position_ids,
+                                                                       input_ids,
+                                                                       original_visual_tokens,
+                                                                       pruned_visual_tokens,
+                                                                       vision_start_token_id,
+                                                                       image_pad_token_id);
+
+    size_t tokens_removed = original_visual_tokens - pruned_visual_tokens;
+    const auto& text_shape = text_embeds.get_shape();
+    OPENVINO_ASSERT(text_shape.size() == 3, "Text embeddings must have shape [batch, seq_length, hidden_size]");
+    size_t original_seq_length = text_shape.at(1);
+    OPENVINO_ASSERT(tokens_removed <= original_seq_length,
+                    "Removed visual tokens exceed original sequence length" );
+    size_t new_seq_length = original_seq_length - tokens_removed;
+
+    OPENVINO_ASSERT(adjusted_position_ids.get_size() > 0, "Adjusted position ids tensor is empty after pruning");
+    const int64_t* position_data = adjusted_position_ids.data<const int64_t>();
+    auto max_pos = std::max_element(position_data, position_data + adjusted_position_ids.get_size());
+    int64_t rope_delta = *max_pos + 1 - static_cast<int64_t>(new_seq_length);
+
+    ov::Tensor merged_embeddings = merge_text_and_image_embeddings_with_pruning(input_ids,
+                                                                                text_embeds,
+                                                                                pruned_visual_embeddings,
+                                                                                image_pad_token_id,
+                                                                                original_visual_tokens,
+                                                                                num_images);
+
+    PruningResult result;
+    result.merged_embeddings = std::move(merged_embeddings);
+    result.pruned_visual_embeddings = std::move(pruned_visual_embeddings);
+    result.adjusted_position_ids = std::move(adjusted_position_ids);
+    result.original_visual_tokens = original_visual_tokens;
+    result.pruned_visual_tokens = pruned_visual_tokens;
+    result.rope_delta = rope_delta;
+
+    return result;
 }
 
 std::vector<ov::Tensor> InputsEmbedder::IInputsEmbedder::to_single_image_tensors(const std::vector<ov::Tensor>& images) {

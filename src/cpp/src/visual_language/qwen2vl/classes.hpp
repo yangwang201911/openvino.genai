@@ -88,23 +88,24 @@ protected:
     std::vector<int64_t> extract_instruction_tokens(const ov::Tensor& input_ids,
                                                    int64_t image_pad_token_id,
                                                    int64_t vision_start_token_id, 
-                                                   int64_t vision_end_token_id);
-    
+                                                   int64_t vision_end_token_id) override;
+
     // [CDPruner] Text feature extraction for relevance calculation
-    ov::Tensor extract_text_features_for_cdpruner(const ov::Tensor& input_ids, 
+    ov::Tensor extract_text_features_for_cdpruner(const ov::Tensor& input_ids,
                                                   int64_t image_pad_token_id,
                                                   int64_t vision_start_token_id,
-                                                  int64_t vision_end_token_id);
-    
-    std::vector<ov::Tensor> convert_visual_features_for_cdpruner(const ov::Tensor& merged_image_embeddings, size_t image_num);
+                                                  int64_t vision_end_token_id) override;
+
+    std::vector<ov::Tensor> convert_visual_features(const ov::Tensor& merged_image_embeddings,
+                                                    size_t image_num) override;
     
     // [CDPruner] Position encoding adjustment function for pruning
     ov::Tensor adjust_position_ids_for_pruning(const ov::Tensor& original_position_ids,
-                                              const ov::Tensor& input_ids,
-                                              size_t original_visual_tokens,
-                                              size_t pruned_visual_tokens,
-                                              int64_t vision_start_token_id,
-                                              int64_t image_pad_token_id);
+                                               const ov::Tensor& input_ids,
+                                               size_t original_visual_tokens,
+                                               size_t pruned_visual_tokens,
+                                               int64_t vision_start_token_id,
+                                               int64_t image_pad_token_id) override;
 
     // [CDPruner] Create merged embeddings for pruned visual tokens
     ov::Tensor merge_text_and_image_embeddings_with_pruning(const ov::Tensor& input_ids,
@@ -112,7 +113,7 @@ protected:
                                                             const ov::Tensor& pruned_vision_embeds,
                                                             int64_t image_pad_token_id,
                                                             size_t original_visual_tokens,
-                                                            size_t num_images);
+                                                            size_t num_images) override;
 };
 
 namespace qwen2_vl_utils {

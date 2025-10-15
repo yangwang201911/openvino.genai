@@ -801,87 +801,25 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
     }
     merged_image_embeddings_tensor = m_merged_image_embeddings;
 
-    // [CDPruner] Apply token pruning if CDPruner is enabled and images are present
-    size_t original_visual_tokens = 0;
-    size_t pruned_visual_tokens = 0;
+    auto pruning_result = apply_visual_token_pruning(input_ids,
+                                                     text_embeds,
+                                                     m_position_ids,
+                                                     merged_image_embeddings_tensor,
+                                                     vision_start_token_id,
+                                                     vision_end_token_id,
+                                                     image_pad_token_id,
+                                                     images.size());
 
-    auto current_config = m_vision_encoder->get_pruning_config();
-    bool pruner_enabled = current_config.has_value() && current_config->pruning_ratio > 0;
-
-    if (m_vision_encoder->is_pruning_available() && pruner_enabled && !images.empty()) {
-        // Store original visual token count for position adjustment
-        original_visual_tokens = merged_image_embeddings_tensor.get_shape()[0];
-
-        // Extract text features for CDPruner using the implemented function
-        ov::Tensor text_features = extract_text_features_for_cdpruner(input_ids,
-                                                                      image_pad_token_id,
-                                                                      vision_start_token_id,
-                                                                      vision_end_token_id);
-
-        // Convert visual features for CDPruner using the implemented function
-        // [CDPruner] Check enable_frame_chunking to decide chunking strategy
-        size_t chunk_count = current_config->enable_frame_chunking ? images.size() : 1;
-        auto visual_features = convert_visual_features_for_cdpruner(merged_image_embeddings_tensor, chunk_count);
-
-        // Apply CDPruner to get pruned visual tokens
-        ov::Tensor pruned_visual_features = m_vision_encoder->apply_pruning(visual_features, text_features);
-        
-        // [CDPruner] Convert back from 3D [1, num_tokens, hidden_size] to 2D [num_tokens, hidden_size]
-        // to match the expected input format for merge_text_and_image_embeddings
-        ov::Shape pruned_shape = pruned_visual_features.get_shape();
-        pruned_visual_tokens = pruned_shape[1];  // num_tokens dimension
-        size_t hidden_size = pruned_shape[2];    // hidden_size dimension
-
-        // Create 2D tensor with shape [num_tokens, hidden_size]
-        ov::Tensor pruned_2d_tensor(pruned_visual_features.get_element_type(), {pruned_visual_tokens, hidden_size});
-
-        // Copy data from 3D [1, num_tokens, hidden_size] to 2D [num_tokens, hidden_size]
-        const float* src_data = pruned_visual_features.data<const float>();
-        float* dst_data = pruned_2d_tensor.data<float>();
-        size_t total_elements = pruned_visual_tokens * hidden_size;
-        std::memcpy(dst_data, src_data, total_elements * sizeof(float));
-
-        merged_image_embeddings_tensor = pruned_2d_tensor;
-
-        // Adjust position_ids if pruning occurred
-        if (original_visual_tokens != pruned_visual_tokens) {
-            m_position_ids = adjust_position_ids_for_pruning(m_position_ids,
-                                                             input_ids,
-                                                             original_visual_tokens,
-                                                             pruned_visual_tokens,
-                                                             vision_start_token_id,
-                                                             image_pad_token_id);
-
-            // Recalculate rope_delta based on adjusted position_ids
-            int64_t position_ids_max_element =
-                *std::max_element(m_position_ids.data<int64_t>(),
-                                  m_position_ids.data<int64_t>() + m_position_ids.get_size());
-
-            // Calculate new sequence length after pruning
-            size_t tokens_removed = original_visual_tokens - pruned_visual_tokens;
-            size_t new_sequence_length = input_ids.get_shape().at(1) - tokens_removed;
-
-            m_rope_delta = position_ids_max_element + 1 - static_cast<int64_t>(new_sequence_length);
-        }
+    if (pruning_result.has_value()) {
+        m_position_ids = std::move(pruning_result->adjusted_position_ids);
+        m_rope_delta = pruning_result->rope_delta;
+        return std::move(pruning_result->merged_embeddings);
     }
 
-    // [CDPruner] Handle pruned visual tokens case
-    if (m_vision_encoder->is_pruning_available() && pruner_enabled && !images.empty() &&
-        original_visual_tokens != pruned_visual_tokens) {
-        // Visual tokens have been pruned, need to create new merged embeddings with correct dimensions
-        return merge_text_and_image_embeddings_with_pruning(input_ids,
-                                                            text_embeds,
-                                                            merged_image_embeddings_tensor,
-                                                            image_pad_token_id,
-                                                            original_visual_tokens,
-                                                            images.size());
-    } else {
-        // No pruning or no images, use original function
-        return qwen2_vl_utils::merge_text_and_image_embeddings(input_ids,
-                                                               text_embeds,
-                                                               merged_image_embeddings_tensor,
-                                                               image_pad_token_id);
-    }
+    return qwen2_vl_utils::merge_text_and_image_embeddings(input_ids,
+                                                           text_embeds,
+                                                           merged_image_embeddings_tensor,
+                                                           image_pad_token_id);
 }
 
 std::pair<ov::Tensor, std::optional<int64_t>> InputsEmbedderQwen2VL::get_position_ids(const size_t inputs_embeds_size, const size_t history_size) {
@@ -1282,7 +1220,7 @@ ov::Tensor InputsEmbedderQwen2VL::adjust_position_ids_for_pruning(const ov::Tens
     return adjusted_position_ids;
 }
 
-std::vector<ov::Tensor> InputsEmbedderQwen2VL::convert_visual_features_for_cdpruner(
+std::vector<ov::Tensor> InputsEmbedderQwen2VL::convert_visual_features(
     const ov::Tensor& merged_image_embeddings,
     size_t image_num) {
     // Convert from [num_patches, embedding_dim] to image_num * [1, num_patches, embedding_dim]
