@@ -126,7 +126,7 @@ std::string_view Logger::get_filename(std::string_view file_path) const {
 std::ostream& Logger::format_prefix(std::ostream& out, ov::log::Level level, const char* file, int line) const {
     switch (level) {
     case ov::log::Level::DEBUG:
-        out << "[DEBUG] ";
+        out << "[DEBUG]";
         break;
     case ov::log::Level::INFO:
         out << "[INFO] ";
@@ -151,11 +151,11 @@ std::ostream& Logger::format_prefix(std::ostream& out, ov::log::Level level, con
             auto tm = gmtime(&tt);
             if (tm) {
                 char buffer[256];
-                strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%Sz", tm);
-                out << buffer << " ";
+                strftime(buffer, sizeof(buffer), "[%Y-%m-%d %H:%M:%S]", tm);
+                out << buffer << "[";
             }
         }
-        out << get_filename(file) << ":" << line << "\t";
+        out << get_filename(file) << ":" << line << "] ";
     }
 
     return out;
