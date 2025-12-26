@@ -20,6 +20,7 @@
 #include "openvino/op/tile.hpp"
 #include "openvino/op/if.hpp"
 #include "openvino/op/concat.hpp"
+#include "logger.hpp"
 
 #include "visual_language/vl_sdpa_transformations.hpp"
 
@@ -1099,12 +1100,15 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
 
     std::vector<std::array<size_t, 3>> video_grid_thw;
     video_grid_thw.reserve(videos.size());
-    for (const auto& encoded_video : videos) {
+    for (size_t i = 0; i < videos.size(); ++i) {
+        const auto& encoded_video = videos[i];
         size_t grid_t = encoded_video.frame_num;
         OPENVINO_ASSERT(grid_t > 0, "Video input must contain at least one frame.");
         size_t grid_h = encoded_video.resized_source_size.height;
         size_t grid_w = encoded_video.resized_source_size.width;
         video_grid_thw.push_back({grid_t, grid_h, grid_w});
+        GENAI_DEBUG("[Video Encoding] Video %zu: frame_num=%zu, resized_size=[%zu, %zu], grid_thw=[%zu, %zu, %zu]",
+                    i, encoded_video.frame_num, grid_h, grid_w, grid_t, grid_h, grid_w);
     }
 
     ov::Tensor input_ids = get_encoded_input_ids(unified_prompt, metrics);
@@ -1121,6 +1125,25 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
 
     int64_t position_ids_max_element = *std::max_element(m_position_ids.data<int64_t>(), m_position_ids.data<int64_t>() + m_position_ids.get_size());
     m_rope_delta = position_ids_max_element + 1 - static_cast<int64_t>(input_ids.get_shape().at(1));
+
+    GENAI_DEBUG("[Position IDs] Initial position_ids shape: [%zu, %zu, %zu]",
+                m_position_ids.get_shape()[0], m_position_ids.get_shape()[1], m_position_ids.get_shape()[2]);
+    GENAI_DEBUG("[Position IDs] Initial max position: %ld, rope_delta: %ld", position_ids_max_element, m_rope_delta);
+    
+    // Print all position IDs in table format
+    const int64_t* pos_ptr = m_position_ids.data<int64_t>();
+    size_t seq_len = m_position_ids.get_shape()[2];
+    const int64_t* input_ids_ptr = input_ids.data<int64_t>();
+    GENAI_DEBUG("[Position IDs] Initial - Full Table:");
+    GENAI_DEBUG("  Pos | Token ID | Temporal | Height | Width");
+    GENAI_DEBUG("  ----|----------|----------|--------|-------");
+    for (size_t i = 0; i < seq_len; ++i) {
+        GENAI_DEBUG("  %3zu | %8ld | %8ld | %6ld | %5ld",
+                    i, input_ids_ptr[i],
+                    pos_ptr[i],
+                    pos_ptr[seq_len + i],
+                    pos_ptr[2 * seq_len + i]);
+    }
 
     if (images.empty() && videos.empty()) {
         ov::Tensor inputs_embeds(text_embeds.get_element_type(), text_embeds.get_shape());
@@ -1149,6 +1172,7 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
         }
 
         const size_t spatial_merge_size = std::max<size_t>(1, m_vision_encoder->get_processor_config().merge_size);
+        const size_t tokens_per_second = m_vlm_config.vision_config_tokens_per_second;
 
         PruningContext pruning_context{input_ids,
                                        text_embeds,
@@ -1160,7 +1184,8 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
                                        vision_pad_token_id,
                                        vision_start_token_id,
                                        vision_end_token_id,
-                                       spatial_merge_size};
+                                       spatial_merge_size,
+                                       tokens_per_second};
 
         VisionTokenPruningProcessor::PruningResult pruning_result = execute_pruning_pipeline(pruning_context);
 
@@ -1174,13 +1199,46 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
         }
     };
 
-    // Only apply pruning to images
-    if (!images.empty() && is_cdpruner_active()) {
-        apply_pruning(images.size(),
-                      images_grid_thw,
-                      images_sequence,
-                      merged_image_embeddings_tensor,
-                      image_pad_token_id);
+    // Apply pruning to both images and videos
+    if ((!images.empty() || !videos.empty()) && is_cdpruner_active()) {
+        if (!images.empty()) {
+            apply_pruning(images.size(),
+                          images_grid_thw,
+                          images_sequence,
+                          merged_image_embeddings_tensor,
+                          image_pad_token_id);
+        }
+        
+        if (!videos.empty()) {
+            apply_pruning(videos.size(),
+                          video_grid_thw,
+                          videos_sequence,
+                          merged_video_embeddings_tensor,
+                          video_pad_token_id);
+        }
+    }
+
+    // Output position IDs after pruning
+    GENAI_DEBUG("[Position IDs] AFTER Pruning - position_ids shape: [%zu, %zu, %zu]",
+                m_position_ids.get_shape()[0], m_position_ids.get_shape()[1], m_position_ids.get_shape()[2]);
+    int64_t position_ids_max_after = *std::max_element(m_position_ids.data<int64_t>(), 
+                                                       m_position_ids.data<int64_t>() + m_position_ids.get_size());
+    GENAI_DEBUG("[Position IDs] AFTER Pruning - max position: %ld, rope_delta: %ld", 
+                position_ids_max_after, m_rope_delta);
+    
+    // Print all position IDs in table format
+    const int64_t* pos_ptr_after = m_position_ids.data<int64_t>();
+    size_t seq_len_after = m_position_ids.get_shape()[2];
+    const int64_t* input_ids_ptr_after = input_ids.data<int64_t>();
+    GENAI_DEBUG("[Position IDs] AFTER Pruning - Full Table (all %zu tokens):", seq_len_after);
+    GENAI_DEBUG("  Pos | Token ID | Temporal | Height | Width");
+    GENAI_DEBUG("  ----|----------|----------|--------|-------");
+    for (size_t i = 0; i < seq_len_after; ++i) {
+        GENAI_DEBUG("  %3zu | %8ld | %8ld | %6ld | %5ld",
+                    i, input_ids_ptr_after[i],
+                    pos_ptr_after[i],
+                    pos_ptr_after[seq_len_after + i],
+                    pos_ptr_after[2 * seq_len_after + i]);
     }
 
     return qwen2_vl_utils::merge_text_and_video_image_embeddings(input_ids,
@@ -1420,6 +1478,18 @@ ov::Tensor InputsEmbedderQwen2VL::create_position_ids(
     const size_t tokens_per_second = m_vlm_config.vision_config_tokens_per_second;
     std::vector<std::array<size_t, 3>> reordered_images_grid_thw;
 
+    GENAI_DEBUG("[create_position_ids] Input parameters:");
+    GENAI_DEBUG("[create_position_ids]   spatial_merge_size=%zu, tokens_per_second=%zu", spatial_merge_size, tokens_per_second);
+    GENAI_DEBUG("[create_position_ids]   images_grid_thw.size()=%zu, videos_grid_thw.size()=%zu", images_grid_thw.size(), videos_grid_thw.size());
+    for (size_t i = 0; i < images_grid_thw.size(); ++i) {
+        GENAI_DEBUG("[create_position_ids]   images_grid_thw[%zu]=[%zu, %zu, %zu]",
+                    i, images_grid_thw[i][0], images_grid_thw[i][1], images_grid_thw[i][2]);
+    }
+    for (size_t i = 0; i < videos_grid_thw.size(); ++i) {
+        GENAI_DEBUG("[create_position_ids]   videos_grid_thw[%zu]=[%zu, %zu, %zu]",
+                    i, videos_grid_thw[i][0], videos_grid_thw[i][1], videos_grid_thw[i][2]);
+    }
+
     if (history_vision_count.size() > 0) {
         size_t vid_idx = 0;
         size_t img_idx = 0;
@@ -1442,6 +1512,14 @@ ov::Tensor InputsEmbedderQwen2VL::create_position_ids(
         }
     }
 
+    GENAI_DEBUG("[create_position_ids] After reordering:");
+    GENAI_DEBUG("[create_position_ids]   reordered_images_grid_thw.size()=%zu", reordered_images_grid_thw.size());
+    for (size_t i = 0; i < reordered_images_grid_thw.size(); ++i) {
+        GENAI_DEBUG("[create_position_ids]   reordered_images_grid_thw[%zu]=[%zu, %zu, %zu] (T=%zu frames)",
+                    i, reordered_images_grid_thw[i][0], reordered_images_grid_thw[i][1], reordered_images_grid_thw[i][2],
+                    reordered_images_grid_thw[i][0]);
+    }
+
     const int64_t* input_ids = input_ids_tensor.data<int64_t>();
     size_t batch_size = input_ids_tensor.get_shape().at(0);
     size_t seq_len = input_ids_tensor.get_shape().at(1);
@@ -1451,6 +1529,11 @@ ov::Tensor InputsEmbedderQwen2VL::create_position_ids(
         if (input_ids[i] == vision_start_token_id) {
             vision_start_indices.push_back(i);
         }
+    }
+
+    GENAI_DEBUG("[create_position_ids] Found %zu vision_start tokens at positions:", vision_start_indices.size());
+    for (size_t i = 0; i < vision_start_indices.size(); ++i) {
+        GENAI_DEBUG("[create_position_ids]   vision_start[%zu] at position %zu", i, vision_start_indices[i]);
     }
 
     ov::Tensor position_ids{ov::element::i64, {3, batch_size, seq_len}};
@@ -1489,9 +1572,18 @@ ov::Tensor InputsEmbedderQwen2VL::create_position_ids(
             size_t llm_grid_sz = llm_grid_h * llm_grid_w;
             size_t ed_image = ed + llm_grid_t * llm_grid_sz;
 
+            GENAI_DEBUG("[Position IDs] Vision region %zu: grid=[%zu, %zu, %zu], llm_grid=[%zu, %zu, %zu], tokens_per_second=%zu",
+                        grid_idx, grid.at(0), grid.at(1), grid.at(2),
+                        llm_grid_t, llm_grid_h, llm_grid_w, tokens_per_second);
+            GENAI_DEBUG("[Position IDs] Vision region %zu: next_pos=%ld, llm_grid_sz=%zu, ed=%zu, ed_image=%zu",
+                        grid_idx, next_pos, llm_grid_sz, ed, ed_image);
+
             // Fill temporal dimension
             for (size_t t = 0; t < llm_grid_t; t++) {
-                std::fill_n(pos_data + ed + t * llm_grid_sz, llm_grid_sz, next_pos + t * tokens_per_second);
+                int64_t temporal_value = next_pos + t * tokens_per_second;
+                GENAI_DEBUG("[Position IDs] Vision region %zu, Frame %zu: temporal=%ld (next_pos=%ld + %zu * %zu)",
+                            grid_idx, t, temporal_value, next_pos, t, tokens_per_second);
+                std::fill_n(pos_data + ed + t * llm_grid_sz, llm_grid_sz, temporal_value);
             }
 
             // Fill height and width dimensions

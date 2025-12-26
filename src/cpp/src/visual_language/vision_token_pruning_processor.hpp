@@ -43,6 +43,9 @@ struct PruningContext {
 
     // Configuration
     size_t spatial_merge_size = 1;  // 1 means no merge (default)
+    
+    // Video-specific parameters (optional, used when processing videos)
+    size_t tokens_per_second = 0;  // Temporal spacing for video frames (0 means not applicable)
 };
 
 /**
@@ -101,6 +104,15 @@ public:
     std::vector<std::vector<size_t>> get_last_selected_tokens() const;
 
     /**
+     * @brief Metadata for video frames after splitting
+     */
+    struct VideoFrameMetadata {
+        size_t original_vision_index;  ///< Index of the original vision input (video)
+        size_t frame_index;            ///< Frame index within the video
+        bool is_video_frame;           ///< True if this region is from a video, false if from an image
+    };
+
+    /**
      * @brief Result structure for CDPruner visual token pruning pipeline.
      * Contains all necessary information about the pruning operation and its results.
      */
@@ -113,6 +125,7 @@ public:
         ov::Tensor pruned_text_embeds;                         ///< Text embeddings with pruned visual positions removed
         std::vector<std::vector<bool>> keep_flags_per_region;  ///< Keep flags for each visual region
         std::optional<int64_t> updated_rope_delta;  ///< Updated rope_delta value (optional, only for RoPE models)
+        std::vector<VideoFrameMetadata> video_frame_metadata;  ///< Metadata for video frames (empty if no videos)
     };
 
     /**
@@ -145,6 +158,8 @@ public:
      * @param vision_start_token_id Token ID for vision start marker
      * @param spatial_merge_size Spatial merge size for coordinate conversion
      * @param keep_flags_per_region_out Output: keep flags for each vision region
+     * @param tokens_per_second Temporal spacing for video frames (0 if not applicable)
+     * @param video_frame_metadata Metadata for video frames (empty if no videos)
      */
     void adjust_position_ids(ov::Tensor& position_ids_inout,
                              const ov::Tensor& input_ids,
@@ -153,7 +168,9 @@ public:
                              int64_t image_pad_token_id,
                              int64_t vision_start_token_id,
                              size_t spatial_merge_size,
-                             std::vector<std::vector<bool>>& keep_flags_per_region_out) const;
+                             std::vector<std::vector<bool>>& keep_flags_per_region_out,
+                             size_t tokens_per_second = 0,
+                             const std::vector<VideoFrameMetadata>& video_frame_metadata = {}) const;
 
     /**
      * @brief Update 3D position IDs for Qwen2VL-style models (3D RoPE).
