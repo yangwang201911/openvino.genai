@@ -28,38 +28,40 @@ namespace {
  * @return Vector of frame embeddings, each [H*W, hidden_dim]
  */
 std::vector<ov::Tensor> split_video_into_frames(const ov::Tensor& video_embeddings,
-                                                 size_t grid_t,
-                                                 size_t grid_h,
-                                                 size_t grid_w) {
+                                                size_t grid_t,
+                                                size_t grid_h,
+                                                size_t grid_w) {
     size_t tokens_per_frame = grid_h * grid_w;
     size_t hidden_dim = video_embeddings.get_shape()[1];
     size_t total_tokens = video_embeddings.get_shape()[0];
-    
+
     OPENVINO_ASSERT(total_tokens == grid_t * tokens_per_frame,
                     "Video embeddings size mismatch: expected " + std::to_string(grid_t * tokens_per_frame) +
-                    " tokens, got " + std::to_string(total_tokens));
-    
+                        " tokens, got " + std::to_string(total_tokens));
+
     std::vector<ov::Tensor> frames;
     frames.reserve(grid_t);
-    
+
     const float* src_data = video_embeddings.data<const float>();
-    
+
     for (size_t t = 0; t < grid_t; ++t) {
         // Create tensor for this frame as 3D [1, tokens_per_frame, hidden_dim] for CDPruner
         ov::Tensor frame_embeds(ov::element::f32, {1, tokens_per_frame, hidden_dim});
         float* dst_data = frame_embeds.data<float>();
-        
+
         // Copy frame data
         size_t src_offset = t * tokens_per_frame * hidden_dim;
-        std::memcpy(dst_data, src_data + src_offset, 
-                    tokens_per_frame * hidden_dim * sizeof(float));
-        
+        std::memcpy(dst_data, src_data + src_offset, tokens_per_frame * hidden_dim * sizeof(float));
+
         frames.push_back(frame_embeds);
-        
+
         GENAI_DEBUG("[Video Frame Split] Frame %zu: shape=[1, %zu, %zu], offset=%zu",
-                    t, tokens_per_frame, hidden_dim, src_offset);
+                    t,
+                    tokens_per_frame,
+                    hidden_dim,
+                    src_offset);
     }
-    
+
     return frames;
 }
 
@@ -396,16 +398,17 @@ ov::Tensor VisionTokenPruningProcessor::generate_pruned_text_embeds(
     return pruned_text_embeds;
 }
 
-void VisionTokenPruningProcessor::adjust_position_ids(ov::Tensor& position_ids_inout,
-                                                      const ov::Tensor& input_ids,
-                                                      const std::vector<std::array<size_t, 3>>& images_grid_thw,
-                                                      const std::vector<size_t>& images_sequence,
-                                                      int64_t image_pad_token_id,
-                                                      int64_t vision_start_token_id,
-                                                      size_t spatial_merge_size,
-                                                      std::vector<std::vector<bool>>& keep_flags_per_region_out,
-                                                      size_t tokens_per_second,
-                                                      const std::vector<VideoFrameMetadata>& video_frame_metadata) const {
+void VisionTokenPruningProcessor::adjust_position_ids(
+    ov::Tensor& position_ids_inout,
+    const ov::Tensor& input_ids,
+    const std::vector<std::array<size_t, 3>>& images_grid_thw,
+    const std::vector<size_t>& images_sequence,
+    int64_t image_pad_token_id,
+    int64_t vision_start_token_id,
+    size_t spatial_merge_size,
+    std::vector<std::vector<bool>>& keep_flags_per_region_out,
+    size_t tokens_per_second,
+    const std::vector<VideoFrameMetadata>& video_frame_metadata) const {
     auto kept_indices_per_image = get_last_selected_tokens();
     OPENVINO_ASSERT(!images_sequence.empty(), "Image sequence must not be empty when pruning visual tokens");
     OPENVINO_ASSERT(!kept_indices_per_image.empty(), "Kept token indices are missing after pruning");
@@ -765,7 +768,7 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
     // If vision inputs contain videos (grid_t > 1), split them into individual frames
     OPENVINO_ASSERT(!current_pruning_config.enable_frame_chunking || context.vision_count > 0,
                     "vision_count must be non-zero when frame chunking is enabled");
-    
+
     // Determine if we have videos (any grid with T > 1)
     bool has_videos = false;
     for (const auto& [grid_t, grid_h, grid_w] : context.visions_grid_thw) {
@@ -774,90 +777,105 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
             break;
         }
     }
-    
+
     size_t chunk_count;
     std::vector<ov::Tensor> visual_features;
     std::vector<VisionTokenPruningProcessor::VideoFrameMetadata> frame_metadata;
-    
+
     if (has_videos && current_pruning_config.enable_frame_chunking) {
         // Convert videos to frame-based processing
         GENAI_DEBUG("[Video Processing] Detected video inputs, converting to frame-based processing");
-        
+
         size_t frame_offset = 0;
         size_t total_frames = 0;
-        
+
         // Calculate total frames
         for (const auto& [grid_t, grid_h, grid_w] : context.visions_grid_thw) {
             total_frames += std::max<size_t>(1, grid_t);
         }
-        
+
         chunk_count = total_frames;
         visual_features.reserve(total_frames);
         frame_metadata.reserve(total_frames);
-        
-        GENAI_DEBUG("[Video Processing] Total vision inputs: %zu, Total frames after split: %zu", 
-                    context.vision_count, total_frames);
-        
+
+        GENAI_DEBUG("[Video Processing] Total vision inputs: %zu, Total frames after split: %zu",
+                    context.vision_count,
+                    total_frames);
+
         // Split each vision input
         for (size_t i = 0; i < context.vision_count; ++i) {
             const auto& [grid_t, grid_h, grid_w] = context.visions_grid_thw[i];
             size_t tokens_for_this_vision = context.tokens_per_vision[i];
-            
+
             // Calculate LLM grid dimensions (after spatial merge)
             size_t llm_grid_h = grid_h / context.spatial_merge_size;
             size_t llm_grid_w = grid_w / context.spatial_merge_size;
-            
+
             if (grid_t > 1) {
                 // This is a video - split into frames
-                GENAI_DEBUG("[Video Processing] Vision %zu: Video with grid=[%zu, %zu, %zu], llm_grid=[%zu, %zu, %zu], %zu tokens total", 
-                            i, grid_t, grid_h, grid_w, grid_t, llm_grid_h, llm_grid_w, tokens_for_this_vision);
-                
+                GENAI_DEBUG("[Video Processing] Vision %zu: Video with grid=[%zu, %zu, %zu], llm_grid=[%zu, %zu, %zu], "
+                            "%zu tokens total",
+                            i,
+                            grid_t,
+                            grid_h,
+                            grid_w,
+                            grid_t,
+                            llm_grid_h,
+                            llm_grid_w,
+                            tokens_for_this_vision);
+
                 // Extract this video's embeddings
                 size_t hidden_dim = context.merged_visual_embeddings.get_shape()[1];
                 ov::Tensor video_embeds(ov::element::f32, {tokens_for_this_vision, hidden_dim});
                 const float* src = context.merged_visual_embeddings.data<const float>();
                 float* dst = video_embeds.data<float>();
-                std::memcpy(dst, src + frame_offset * hidden_dim, 
-                           tokens_for_this_vision * hidden_dim * sizeof(float));
-                
+                std::memcpy(dst, src + frame_offset * hidden_dim, tokens_for_this_vision * hidden_dim * sizeof(float));
+
                 // Split into individual frames using LLM grid dimensions
                 auto frames = split_video_into_frames(video_embeds, grid_t, llm_grid_h, llm_grid_w);
                 visual_features.insert(visual_features.end(), frames.begin(), frames.end());
-                
+
                 // Record metadata for each frame
                 for (size_t frame_idx = 0; frame_idx < grid_t; ++frame_idx) {
                     frame_metadata.push_back({i, frame_idx, true});
                 }
-                
+
                 GENAI_DEBUG("[Video Processing] Split video %zu into %zu frames, each with %zu tokens",
-                            i, frames.size(), llm_grid_h * llm_grid_w);
+                            i,
+                            frames.size(),
+                            llm_grid_h * llm_grid_w);
             } else {
                 // This is an image - process as single frame
-                GENAI_DEBUG("[Video Processing] Vision %zu: Image with grid=[1, %zu, %zu], llm_grid=[1, %zu, %zu], %zu tokens", 
-                            i, grid_h, grid_w, llm_grid_h, llm_grid_w, tokens_for_this_vision);
-                
+                GENAI_DEBUG(
+                    "[Video Processing] Vision %zu: Image with grid=[1, %zu, %zu], llm_grid=[1, %zu, %zu], %zu tokens",
+                    i,
+                    grid_h,
+                    grid_w,
+                    llm_grid_h,
+                    llm_grid_w,
+                    tokens_for_this_vision);
+
                 size_t hidden_dim = context.merged_visual_embeddings.get_shape()[1];
                 // Create as 3D [1, tokens, hidden_dim] for CDPruner
                 ov::Tensor image_embeds(ov::element::f32, {1, tokens_for_this_vision, hidden_dim});
                 const float* src = context.merged_visual_embeddings.data<const float>();
                 float* dst = image_embeds.data<float>();
-                std::memcpy(dst, src + frame_offset * hidden_dim, 
-                           tokens_for_this_vision * hidden_dim * sizeof(float));
+                std::memcpy(dst, src + frame_offset * hidden_dim, tokens_for_this_vision * hidden_dim * sizeof(float));
                 visual_features.push_back(image_embeds);
-                
+
                 // Record metadata for image (not a video frame)
                 frame_metadata.push_back({i, 0, false});
             }
-            
+
             frame_offset += tokens_for_this_vision;
         }
-        
-        GENAI_DEBUG("[Video Processing] Successfully created %zu frame tensors for pruning", 
-                    visual_features.size());
+
+        GENAI_DEBUG("[Video Processing] Successfully created %zu frame tensors for pruning", visual_features.size());
     } else {
         // Standard processing without video frame splitting
         chunk_count = current_pruning_config.enable_frame_chunking ? context.vision_count : 1;
-        visual_features = convert_visual_features(context.merged_visual_embeddings, chunk_count, context.tokens_per_vision);
+        visual_features =
+            convert_visual_features(context.merged_visual_embeddings, chunk_count, context.tokens_per_vision);
     }
 
     // Step 3: Apply vision token processing (pruning)
@@ -880,7 +898,7 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
     }
 
     result.is_pruned = true;
-    
+
     // Store video frame metadata in result
     result.video_frame_metadata = frame_metadata;
 
@@ -895,31 +913,35 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
                         result.keep_flags_per_region,
                         context.tokens_per_second,
                         frame_metadata);
-    
+
     // Step 5b: For video frames, adjust temporal dimension using tokens_per_second
     if (!frame_metadata.empty() && context.tokens_per_second > 0) {
         const ov::Shape& pos_shape = position_ids.get_shape();
         bool is_3d_rope = (pos_shape.size() == 3 && pos_shape[0] == 3);
-        
+
         if (is_3d_rope) {
             // 3D RoPE: position_ids shape is [3, batch, seq_len]
             // Dimension 0 is temporal, need to adjust for video frames
-            GENAI_DEBUG("[Video Temporal Adjustment] Starting temporal adjustment for %zu video frames", frame_metadata.size());
+            GENAI_DEBUG("[Video Temporal Adjustment] Starting temporal adjustment for %zu video frames",
+                        frame_metadata.size());
             GENAI_DEBUG("[Video Temporal Adjustment] tokens_per_second=%zu", context.tokens_per_second);
-            
+
             int64_t* pos_data = position_ids.data<int64_t>();
             const int64_t* input_ids_data = context.input_ids.data<const int64_t>();
             size_t batch_size = pos_shape[1];
             size_t original_seq_len = context.input_ids.get_shape()[1];
             size_t pruned_seq_len = pos_shape[2];
-            
+
             // Print frame metadata
             for (size_t i = 0; i < frame_metadata.size(); ++i) {
                 const auto& meta = frame_metadata[i];
                 GENAI_DEBUG("[Video Temporal] Frame metadata[%zu]: is_video=%d, frame_idx=%zu, orig_vision_idx=%zu",
-                           i, meta.is_video_frame, meta.frame_index, meta.original_vision_index);
+                            i,
+                            meta.is_video_frame,
+                            meta.frame_index,
+                            meta.original_vision_index);
             }
-            
+
             // Build mapping from pruned positions to original positions
             std::vector<size_t> pruned_to_original(pruned_seq_len);
             size_t pruned_idx = 0;
@@ -927,17 +949,17 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
                 size_t region_idx = 0;
                 size_t token_in_region = 0;
                 bool inside_vision = false;
-                
+
                 for (size_t orig_idx = 0; orig_idx < original_seq_len && pruned_idx < pruned_seq_len; ++orig_idx) {
                     int64_t token_id = input_ids_data[batch_idx * original_seq_len + orig_idx];
-                    
+
                     if (token_id == context.vision_start_token_id) {
                         inside_vision = true;
                         token_in_region = 0;
                         pruned_to_original[pruned_idx++] = orig_idx;
                         continue;
                     }
-                    
+
                     if (inside_vision && token_id == context.vision_pad_token_id) {
                         // Check if this token was kept
                         if (region_idx < result.keep_flags_per_region.size() &&
@@ -948,7 +970,7 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
                         token_in_region++;
                         continue;
                     }
-                    
+
                     if (inside_vision && token_id == context.vision_end_token_id) {
                         inside_vision = false;
                         pruned_to_original[pruned_idx++] = orig_idx;
@@ -956,72 +978,81 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
                         token_in_region = 0;
                         continue;
                     }
-                    
+
                     if (!inside_vision) {
                         pruned_to_original[pruned_idx++] = orig_idx;
                     }
                 }
             }
-            
+
             // Now adjust temporal values for video frames
             // Calculate tokens per frame for each metadata entry
             // For video frames that were concatenated, we need to split the keep_flags back by frame
             std::vector<size_t> tokens_per_frame;
-            
+
             if (frame_metadata.size() > 1 && result.keep_flags_per_region.size() == 1) {
                 // Video frames were concatenated into one region, need to split keep_flags by frame
                 const auto& concatenated_flags = result.keep_flags_per_region[0];
                 size_t tokens_per_frame_original = concatenated_flags.size() / frame_metadata.size();
-                
-                GENAI_DEBUG("[Video Temporal] Splitting concatenated keep_flags: %zu total flags, %zu frames, %zu tokens/frame",
-                           concatenated_flags.size(), frame_metadata.size(), tokens_per_frame_original);
-                
+
+                GENAI_DEBUG(
+                    "[Video Temporal] Splitting concatenated keep_flags: %zu total flags, %zu frames, %zu tokens/frame",
+                    concatenated_flags.size(),
+                    frame_metadata.size(),
+                    tokens_per_frame_original);
+
                 for (size_t frame_idx = 0; frame_idx < frame_metadata.size(); ++frame_idx) {
                     size_t start_pos = frame_idx * tokens_per_frame_original;
                     size_t end_pos = (frame_idx + 1) * tokens_per_frame_original;
                     size_t kept_tokens = 0;
-                    
+
                     for (size_t i = start_pos; i < end_pos && i < concatenated_flags.size(); ++i) {
                         if (concatenated_flags[i]) {
                             kept_tokens++;
                         }
                     }
-                    
+
                     tokens_per_frame.push_back(kept_tokens);
                     GENAI_DEBUG("[Video Temporal] Frame %zu: %zu tokens after pruning (range [%zu, %zu))",
-                               frame_idx, kept_tokens, start_pos, end_pos);
+                                frame_idx,
+                                kept_tokens,
+                                start_pos,
+                                end_pos);
                 }
             } else {
                 // Standard case: each frame has its own keep_flags
                 for (size_t i = 0; i < frame_metadata.size(); ++i) {
                     size_t kept_tokens = 0;
                     if (i < result.keep_flags_per_region.size()) {
-                        kept_tokens = std::count(result.keep_flags_per_region[i].begin(), 
-                                               result.keep_flags_per_region[i].end(), true);
+                        kept_tokens = std::count(result.keep_flags_per_region[i].begin(),
+                                                 result.keep_flags_per_region[i].end(),
+                                                 true);
                     }
                     tokens_per_frame.push_back(kept_tokens);
                     GENAI_DEBUG("[Video Temporal] Frame %zu: %zu tokens after pruning", i, kept_tokens);
                 }
             }
-            
+
             for (size_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
                 size_t region_idx = 0;
                 bool inside_vision = false;
                 size_t vision_token_count = 0;  // Counter for video_pad tokens in current vision region
                 int64_t vision_start_temporal = 0;
-                
+
                 for (size_t pruned_idx = 0; pruned_idx < pruned_seq_len; ++pruned_idx) {
                     size_t orig_idx = pruned_to_original[pruned_idx];
                     int64_t token_id = input_ids_data[batch_idx * original_seq_len + orig_idx];
-                    
+
                     if (token_id == context.vision_start_token_id) {
                         inside_vision = true;
                         vision_token_count = 0;
                         vision_start_temporal = pos_data[batch_idx * pruned_seq_len + pruned_idx];
                         GENAI_DEBUG("[Video Temporal] Region %zu starts at pos %zu, base_temporal=%ld",
-                                   region_idx, pruned_idx, vision_start_temporal);
+                                    region_idx,
+                                    pruned_idx,
+                                    vision_start_temporal);
                     }
-                    
+
                     if (inside_vision && token_id == context.vision_pad_token_id) {
                         // Determine which frame this token belongs to based on position in concatenated result
                         size_t cumulative_tokens = 0;
@@ -1034,32 +1065,41 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
                             cumulative_tokens += tokens_per_frame[i];
                             frame_idx = i + 1;
                         }
-                        
+
                         // Apply temporal adjustment for video frames
                         if (frame_idx < frame_metadata.size() && frame_metadata[frame_idx].is_video_frame) {
                             int64_t old_temporal = pos_data[batch_idx * pruned_seq_len + pruned_idx];
-                            int64_t new_temporal = vision_start_temporal + frame_metadata[frame_idx].frame_index * context.tokens_per_second;
+                            int64_t new_temporal =
+                                vision_start_temporal + 1 +
+                                static_cast<int64_t>(frame_metadata[frame_idx].frame_index * context.tokens_per_second);
                             pos_data[batch_idx * pruned_seq_len + pruned_idx] = new_temporal;
-                            
-                            if (vision_token_count < 3 || vision_token_count == cumulative_tokens) {  // Log first few tokens of each frame
-                                GENAI_DEBUG("[Video Temporal] Pos %zu (token %zu in vision, frame %zu): temporal %ld -> %ld",
-                                           pruned_idx, vision_token_count, frame_idx, old_temporal, new_temporal);
+
+                            if (vision_token_count < 3 ||
+                                vision_token_count == cumulative_tokens) {  // Log first few tokens of each frame
+                                GENAI_DEBUG(
+                                    "[Video Temporal] Pos %zu (token %zu in vision, frame %zu): temporal %ld -> %ld",
+                                    pruned_idx,
+                                    vision_token_count,
+                                    frame_idx,
+                                    old_temporal,
+                                    new_temporal);
                             }
                         }
                         vision_token_count++;
                     }
-                    
+
                     if (inside_vision && token_id == context.vision_end_token_id) {
                         inside_vision = false;
                         region_idx++;
                         GENAI_DEBUG("[Video Temporal] Region ended at pos %zu after %zu video tokens",
-                                   pruned_idx, vision_token_count);
+                                    pruned_idx,
+                                    vision_token_count);
                     }
                 }
             }
-            
-            GENAI_DEBUG("[Video Temporal Adjustment] Completed temporal adjustment for %zu regions", 
-                       frame_metadata.size());
+
+            GENAI_DEBUG("[Video Temporal Adjustment] Completed temporal adjustment for %zu regions",
+                        frame_metadata.size());
         }
     }
 
