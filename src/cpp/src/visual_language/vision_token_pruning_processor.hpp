@@ -182,6 +182,7 @@ public:
                                       const std::vector<std::array<size_t, 3>>& reordered_images_grid_thw,
                                       const std::vector<std::vector<size_t>>& kept_indices_per_image,
                                       size_t spatial_merge_size,
+                                      size_t tokens_per_second,
                                       std::vector<std::vector<bool>>& keep_flags_out) const;
 
     /**

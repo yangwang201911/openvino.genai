@@ -1271,8 +1271,16 @@ std::pair<ov::Tensor, std::optional<int64_t>> InputsEmbedderQwen2VL::get_positio
 
 std::pair<ov::Tensor, std::optional<int64_t>> InputsEmbedderQwen2VL::get_generation_phase_position_ids(const size_t inputs_embeds_size, const size_t history_size, int64_t rope_delta) {
     OPENVINO_ASSERT(history_size != 0, "get_generation_phase_position_ids() should only be called when history_size is non-zero (generation phase).");
+    
+    GENAI_DEBUG("[get_generation_phase_position_ids] inputs_embeds_size=%zu, history_size=%zu, rope_delta=%ld",
+                inputs_embeds_size, history_size, rope_delta);
+    
     ov::Tensor position_ids{ov::element::i64, {3, 1, inputs_embeds_size}};
     int64_t new_pos_id = static_cast<int64_t>(history_size + rope_delta);
+    
+    GENAI_DEBUG("[get_generation_phase_position_ids] new_pos_id=%ld, creating position_ids shape=[3, 1, %zu]",
+                new_pos_id, inputs_embeds_size);
+    
     for (size_t dim = 0; dim < 3; ++dim) {
         int64_t* pos_data = position_ids.data<int64_t>() + dim * inputs_embeds_size;
         std::iota(pos_data, pos_data + inputs_embeds_size, new_pos_id);
@@ -1530,18 +1538,9 @@ ov::Tensor InputsEmbedderQwen2VL::create_position_ids(
             size_t llm_grid_sz = llm_grid_h * llm_grid_w;
             size_t ed_image = ed + llm_grid_t * llm_grid_sz;
 
-            GENAI_DEBUG("[Position IDs] Vision region %zu: grid=[%zu, %zu, %zu], llm_grid=[%zu, %zu, %zu], tokens_per_second=%zu",
-                        grid_idx, grid.at(0), grid.at(1), grid.at(2),
-                        llm_grid_t, llm_grid_h, llm_grid_w, tokens_per_second);
-            GENAI_DEBUG("[Position IDs] Vision region %zu: next_pos=%ld, llm_grid_sz=%zu, ed=%zu, ed_image=%zu",
-                        grid_idx, next_pos, llm_grid_sz, ed, ed_image);
-
             // Fill temporal dimension
             for (size_t t = 0; t < llm_grid_t; t++) {
-                int64_t temporal_value = next_pos + t * tokens_per_second;
-                GENAI_DEBUG("[Position IDs] Vision region %zu, Frame %zu: temporal=%ld (next_pos=%ld + %zu * %zu)",
-                            grid_idx, t, temporal_value, next_pos, t, tokens_per_second);
-                std::fill_n(pos_data + ed + t * llm_grid_sz, llm_grid_sz, temporal_value);
+                std::fill_n(pos_data + ed + t * llm_grid_sz, llm_grid_sz, next_pos + t * tokens_per_second);
             }
 
             // Fill height and width dimensions
