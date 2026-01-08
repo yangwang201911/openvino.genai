@@ -650,8 +650,8 @@ std::unique_ptr<CircularBufferQueue<ov::InferRequest>> create_vision_encoder_ire
         });
 }
 
-bool check_image_preprocess_env() {
-    const char* env = std::getenv("IMAGE_PREPROCESS");
+bool check_vision_preprocess_env() {
+    const char* env = std::getenv("VISION_PREPROCESS");
     return !(env && std::string(env) == "CPP");
 }
 
@@ -659,8 +659,8 @@ VisionEncoderQwen2VL::VisionEncoderQwen2VL(const std::filesystem::path& model_di
                                            const std::string& device,
                                            const ov::AnyMap properties)
     : VisionEncoder(model_dir, device, properties),
-      use_ov_image_preprocess(check_image_preprocess_env()) {
-    if (use_ov_image_preprocess) {
+      use_ov_vision_preprocess(check_vision_preprocess_env()) {
+    if (use_ov_vision_preprocess) {
         auto model_org = utils::singleton_core().read_model(model_dir / "openvino_vision_embeddings_model.xml");
         m_ireq_queue_vision_encoder = create_vision_encoder_ireq(model_org, m_processor_config, device, properties);
     }
@@ -671,8 +671,8 @@ VisionEncoderQwen2VL::VisionEncoderQwen2VL(const ModelsMap& models_map,
                                            const std::string& device,
                                            const ov::AnyMap properties)
     : VisionEncoder(models_map, config_dir_path, device, properties),
-      use_ov_image_preprocess(check_image_preprocess_env()) {
-    if (use_ov_image_preprocess) {
+      use_ov_vision_preprocess(check_vision_preprocess_env()) {
+    if (use_ov_vision_preprocess) {
         const auto& [vision_encoder_model, vision_encoder_weights] =
             utils::get_model_weights_pair(models_map, "vision_embeddings");
         auto model_org = utils::singleton_core().read_model(vision_encoder_model, vision_encoder_weights);
@@ -881,7 +881,7 @@ void VisionEncoderQwen2VL::encode_with_imagepreprocess_ov(const std::vector<ov::
 
 EncodedImage VisionEncoderQwen2VL::encode(const ov::Tensor& image, const ov::AnyMap& config_map) {
     EncodedImage encoded_img;
-    if (use_ov_image_preprocess == false) {
+    if (use_ov_vision_preprocess == false) {
         encode_with_imagepreprocess_cpp({image}, config_map, encoded_img.resized_source, encoded_img.resized_source_size);
         return encoded_img;
     }
@@ -900,7 +900,7 @@ EncodedVideo VisionEncoderQwen2VL::encode_frames(const std::vector<ov::Tensor>& 
 
     using EncodeFunc = std::function<void(const std::vector<ov::Tensor>&, const ov::AnyMap&, ov::genai::EncodedVideo&, size_t, size_t)>;
     EncodeFunc encode_func;
-    if (use_ov_image_preprocess == false) {
+    if (use_ov_vision_preprocess == false) {
         encode_func = [this](const std::vector<ov::Tensor>& image, const ov::AnyMap& config_map, ov::genai::EncodedVideo& encoded_video, size_t frm_num, size_t frm_id) {
             this->encode_with_imagepreprocess_cpp(image, config_map, encoded_video.video_features, encoded_video.resized_source_size, frm_num, frm_id);
         };
@@ -1139,7 +1139,7 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
     merged_video_embeddings_tensor = m_merged_video_embeddings;
     merged_image_embeddings_tensor = m_merged_image_embeddings;
 
-    // [CDPruner] Lambda to apply pruning
+    // [CDPruner] Lambda to apply pruning (reusable for both images and videos)
     auto apply_pruning = [&](size_t vision_count,
                              const std::vector<std::array<size_t, 3>>& grid_thw,
                              const std::vector<size_t>& sequence,
@@ -1168,15 +1168,14 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
                                        spatial_merge_size,
                                        tokens_per_second};
 
-        VisionTokenPruningProcessor::PruningResult pruning_result = execute_pruning_pipeline(pruning_context);
+        if (auto pruning_result = execute_pruning_pipeline(pruning_context)) {
+            merged_embeddings = pruning_result->pruned_embeddings;
+            input_ids = pruning_result->pruned_input_ids;
+            text_embeds = pruning_result->pruned_text_embeds;
 
-        // Update with pruned versions
-        input_ids = pruning_result.pruned_input_ids;
-        text_embeds = pruning_result.pruned_text_embeds;
-        merged_embeddings = pruning_result.pruned_embeddings;
-
-        if (pruning_result.updated_rope_delta.has_value()) {
-            m_rope_delta = pruning_result.updated_rope_delta.value();
+            if (pruning_result->updated_rope_delta.has_value()) {
+                m_rope_delta = pruning_result->updated_rope_delta.value();
+            }
         }
     };
 
@@ -1189,7 +1188,7 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
                           merged_image_embeddings_tensor,
                           image_pad_token_id);
         }
-        
+
         if (!videos.empty()) {
             apply_pruning(videos.size(),
                           video_grid_thw,

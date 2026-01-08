@@ -1,4 +1,4 @@
-// Copyright (C) 2023-2025 Intel Corporation
+// Copyright (C) 2023-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 
 #include "vision_token_pruning_processor.hpp"
@@ -767,14 +767,14 @@ ov::Tensor VisionTokenPruningProcessor::update_position_ids_1d(
     return new_position_ids;
 }
 
-VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(const PruningContext& context,
-                                                                                ov::Tensor& position_ids,
-                                                                                utils::KVCacheState& kv_cache_state,
-                                                                                size_t prev_hist_length) {
+std::optional<VisionTokenPruningProcessor::PruningResult> VisionTokenPruningProcessor::execute(
+    const PruningContext& context,
+    ov::Tensor& position_ids,
+    utils::KVCacheState& kv_cache_state,
+    size_t prev_hist_length) {
     auto pruning_start = std::chrono::high_resolution_clock::now();
 
     PruningResult result;
-    result.is_pruned = false;
     result.original_visual_tokens = context.merged_visual_embeddings.get_shape()[0];
 
     // Retrieve current pruning configuration
@@ -917,10 +917,8 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
     result.pruned_embeddings = pruned_2d_tensor;
 
     if (result.original_visual_tokens == result.pruned_visual_tokens) {
-        return result;
+        return std::nullopt;
     }
-
-    result.is_pruned = true;
 
     // Store video frame metadata in result
     result.video_frame_metadata = frame_metadata;
@@ -929,16 +927,18 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
     const ov::Shape& pos_shape = position_ids.get_shape();
     bool is_3d_encoding = (pos_shape.size() == 3 && pos_shape[0] == 3);
     if (is_3d_encoding) {
-        GENAI_DEBUG("[CDPruner] Original position_ids before pruning - Shape: [%zu, %zu, %zu]", 
-                    pos_shape[0], pos_shape[1], pos_shape[2]);
-        
+        GENAI_DEBUG("[CDPruner] Original position_ids before pruning - Shape: [%zu, %zu, %zu]",
+                    pos_shape[0],
+                    pos_shape[1],
+                    pos_shape[2]);
+
         const int64_t* pos_ids_data = position_ids.data<int64_t>();
         const int64_t* input_ids_data = context.input_ids.data<int64_t>();
         size_t seq_len = pos_shape[2];
         std::stringstream table_stream;
         table_stream << "\n  Index | Token ID | Temporal | Height | Width\n";
         table_stream << "--------+----------+----------+--------+-------\n";
-        
+
         const size_t max_display_lines = 40;
         if (seq_len <= max_display_lines) {
             for (size_t i = 0; i < seq_len; ++i) {
@@ -946,11 +946,9 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
                 int64_t temporal_val = pos_ids_data[i];
                 int64_t height_val = pos_ids_data[seq_len + i];
                 int64_t width_val = pos_ids_data[2 * seq_len + i];
-                table_stream << std::setw(7) << i << " | " 
-                            << std::setw(8) << token_id << " | "
-                            << std::setw(8) << temporal_val << " | "
-                            << std::setw(6) << height_val << " | "
-                            << std::setw(5) << width_val << "\n";
+                table_stream << std::setw(7) << i << " | " << std::setw(8) << token_id << " | " << std::setw(8)
+                             << temporal_val << " | " << std::setw(6) << height_val << " | " << std::setw(5)
+                             << width_val << "\n";
             }
         } else {
             for (size_t i = 0; i < 20; ++i) {
@@ -958,11 +956,9 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
                 int64_t temporal_val = pos_ids_data[i];
                 int64_t height_val = pos_ids_data[seq_len + i];
                 int64_t width_val = pos_ids_data[2 * seq_len + i];
-                table_stream << std::setw(7) << i << " | " 
-                            << std::setw(8) << token_id << " | "
-                            << std::setw(8) << temporal_val << " | "
-                            << std::setw(6) << height_val << " | "
-                            << std::setw(5) << width_val << "\n";
+                table_stream << std::setw(7) << i << " | " << std::setw(8) << token_id << " | " << std::setw(8)
+                             << temporal_val << " | " << std::setw(6) << height_val << " | " << std::setw(5)
+                             << width_val << "\n";
             }
             table_stream << "   ...  |      ... |      ... |    ... |   ...\n";
             table_stream << "   (omitted " << (seq_len - 40) << " lines)\n";
@@ -972,11 +968,9 @@ VisionTokenPruningProcessor::PruningResult VisionTokenPruningProcessor::execute(
                 int64_t temporal_val = pos_ids_data[i];
                 int64_t height_val = pos_ids_data[seq_len + i];
                 int64_t width_val = pos_ids_data[2 * seq_len + i];
-                table_stream << std::setw(7) << i << " | " 
-                            << std::setw(8) << token_id << " | "
-                            << std::setw(8) << temporal_val << " | "
-                            << std::setw(6) << height_val << " | "
-                            << std::setw(5) << width_val << "\n";
+                table_stream << std::setw(7) << i << " | " << std::setw(8) << token_id << " | " << std::setw(8)
+                             << temporal_val << " | " << std::setw(6) << height_val << " | " << std::setw(5)
+                             << width_val << "\n";
             }
         }
         GENAI_DEBUG("[CDPruner] Original position_ids table:%s", table_stream.str().c_str());
