@@ -977,26 +977,19 @@ ov::Tensor InputsEmbedderMiniCPM::get_inputs_embeds(const std::string& unified_p
     // Step 1.5: Apply pruning if configured
     // Note: MiniCPM doesn't use image_pad tokens like Qwen2VL, so we use a simplified approach:
     // - Build PruningContext with vision_pad_token_id=-1 (indicating no pad tokens)
-    // - execute_pruning_pipeline will skip input_ids/text_embeds modification
-    // - Only use the pruned_embeddings result
+    // Step 1.5: Apply pruning if configured
     if (!images.empty() && is_cdpruner_active()) {
         size_t text_hidden_size = inputs_embeds.get_shape()[2];
         size_t vision_hidden_size = merged_vision_embeddings.get_shape()[1];
         
-        GENAI_DEBUG("[MiniCPM] Pruning enabled: text_embeds hidden_size=%zu, vision_embeddings hidden_size=%zu",
-                    text_hidden_size, vision_hidden_size);
-        
         // Check if hidden sizes match - CDPruner requires matching dimensions
         if (vision_hidden_size != text_hidden_size) {
             GENAI_WARN("[MiniCPM] Skipping pruning: vision hidden_size (%zu) != text hidden_size (%zu). "
-                       "Pruning requires matching dimensions. This is expected for tiny-random test models.",
+                       "This is expected for tiny-random test models.",
                        vision_hidden_size, text_hidden_size);
         } else {
-            // Save original tokens_per_image (per-block) before pruning
-            // We'll need this to know the actual token count per block for splitting keep_masks
             std::vector<size_t> original_tokens_per_block = tokens_per_image;
             
-            // Important: tokens_per_image is per-block [4,4,4,4,4] for merge, but CDPruner needs per-image [20]
             // Build tokens_per_vision: sum all blocks belonging to each image
             std::vector<size_t> tokens_per_vision;
             std::vector<std::array<size_t, 3>> vision_grid_thw;
@@ -1019,69 +1012,20 @@ ov::Tensor InputsEmbedderMiniCPM::get_inputs_embeds(const std::string& unified_p
                 vision_grid_thw.push_back({1, 1, image_total_tokens});
             }
             
-            GENAI_DEBUG("[MiniCPM] Built tokens_per_vision for pruning: %zu images", tokens_per_vision.size());
-            
             PruningContext pruning_context{
-                encoded_input,           // input_ids (won't be modified since no pad tokens)
-                inputs_embeds,           // text_embeds (won't be modified since no pad tokens)
-                merged_vision_embeddings,// merged_visual_embeddings
-                images.size(),           // vision_count
-                vision_grid_thw,         // visions_grid_thw (per-image)
-                images_sequence,         // visions_sequence
-                tokens_per_vision,       // tokens_per_vision (per-image, not per-block!)
-                -1,                      // vision_pad_token_id: -1 means no pad tokens used
-                im_start_id,             // vision_start_token_id: for text feature extraction
-                im_end_id,               // vision_end_token_id: for text feature extraction
-                slice_start_id,          // slice_start_token_id: for slice region markers
-                slice_end_id,            // slice_end_token_id: for slice region markers
-                1                        // spatial_merge_size: MiniCPM doesn't use spatial merge
+                encoded_input, inputs_embeds, merged_vision_embeddings,
+                images.size(), vision_grid_thw, images_sequence, tokens_per_vision,
+                -1, im_start_id, im_end_id, slice_start_id, slice_end_id, 1
             };
             
-            GENAI_DEBUG("[MiniCPM] About to call execute_pruning_pipeline");
             auto pruning_result = execute_pruning_pipeline(pruning_context);
-            GENAI_DEBUG("[MiniCPM] execute_pruning_pipeline returned, has_value=%d", pruning_result.has_value());
             
             if (pruning_result) {
-                // Update all three tensors with pruned versions (unified with Qwen2VL approach)
-                // Pruning pipeline removes vision placeholders from input_ids and text_embeds
-                
-                GENAI_DEBUG("[MiniCPM] ========== BEFORE PRUNING UPDATE ==========");
-                GENAI_DEBUG("[MiniCPM] Original: input_ids [%zu, %zu], text_embeds [%zu, %zu, %zu], vision [%zu, %zu]",
-                           encoded_input.get_shape()[0], encoded_input.get_shape()[1],
-                           inputs_embeds.get_shape()[0], inputs_embeds.get_shape()[1], inputs_embeds.get_shape()[2],
-                           merged_vision_embeddings.get_shape()[0], merged_vision_embeddings.get_shape()[1]);
-                GENAI_DEBUG("[MiniCPM] About to update with pruned tensors");
                 merged_vision_embeddings = std::move(pruning_result->pruned_embeddings);
                 encoded_input = pruning_result->pruned_input_ids;
                 inputs_embeds = pruning_result->pruned_text_embeds;
                 
-                GENAI_DEBUG("[MiniCPM] ========== AFTER PRUNING UPDATE ==========");
-                GENAI_DEBUG("[MiniCPM] Pruned: input_ids [%zu, %zu], text_embeds [%zu, %zu, %zu], vision [%zu, %zu]",
-                           encoded_input.get_shape()[0], encoded_input.get_shape()[1],
-                           inputs_embeds.get_shape()[0], inputs_embeds.get_shape()[1], inputs_embeds.get_shape()[2],
-                           merged_vision_embeddings.get_shape()[0], merged_vision_embeddings.get_shape()[1]);
-                
-                GENAI_DEBUG("[MiniCPM] Vision tokens: %zu -> %zu (%.1f%% reduction)", 
-                           pruning_result->original_visual_tokens,
-                           pruning_result->pruned_visual_tokens,
-                           100.0 * (1.0 - (double)pruning_result->pruned_visual_tokens / pruning_result->original_visual_tokens));
-                
-                // Debug: Print sample of pruned input_ids to verify placeholders were removed
-                const int64_t* pruned_ids = encoded_input.data<const int64_t>();
-                size_t pruned_len = encoded_input.get_shape()[1];
-                std::string sample_ids = "[MiniCPM] Pruned input_ids sample (first 20): [";
-                for (size_t i = 0; i < std::min<size_t>(20, pruned_len); ++i) {
-                    sample_ids += std::to_string(pruned_ids[i]);
-                    if (i + 1 < std::min<size_t>(20, pruned_len)) sample_ids += ", ";
-                }
-                sample_ids += "]";
-                GENAI_DEBUG("%s", sample_ids.c_str());
-                
                 // Rebuild tokens_per_image (per-block) from keep_flags_per_region (per-image)
-                // keep_flags_per_region has one mask per image, containing all tokens (base + slices)
-                // We need to split each mask back into per-block counts using original_tokens_per_block
-                GENAI_DEBUG("[MiniCPM] Rebuilding tokens_per_image from keep_flags_per_region");
-                GENAI_DEBUG("[MiniCPM] Original tokens_per_block size: %zu", original_tokens_per_block.size());
                 tokens_per_image.clear();
                 OPENVINO_ASSERT(pruning_result->keep_flags_per_region.size() == images_sequence.size(), 
                                "keep_flags_per_region size mismatch");
@@ -1093,18 +1037,17 @@ ov::Tensor InputsEmbedderMiniCPM::get_inputs_embeds(const std::string& unified_p
                     const auto& image_keep_mask = pruning_result->keep_flags_per_region[img_idx];
                     
                     // Calculate blocks: 1 base + slices
-                    size_t num_blocks = 1;  // base
+                    size_t num_blocks = 1;
                     ov::Shape slices_shape = encoded_image.slices_shape;
                     if (slices_shape.size()) {
                         num_blocks += slices_shape.at(0) * slices_shape.at(1);
                     }
                     
-                    // Split the keep_mask into blocks using ACTUAL token counts from original_tokens_per_block
+                    // Split the keep_mask into blocks
                     size_t mask_offset = 0;
                     for (size_t block = 0; block < num_blocks; ++block) {
                         size_t block_token_count = original_tokens_per_block[original_block_idx++];
                         
-                        // Verify we don't exceed the keep_mask bounds
                         OPENVINO_ASSERT(mask_offset + block_token_count <= image_keep_mask.size(),
                                        "Block token count exceeds keep_mask bounds at image " + 
                                        std::to_string(img_idx) + ", block " + std::to_string(block) + 
@@ -1112,7 +1055,6 @@ ov::Tensor InputsEmbedderMiniCPM::get_inputs_embeds(const std::string& unified_p
                                        ", block_tokens=" + std::to_string(block_token_count) + 
                                        ", mask_size=" + std::to_string(image_keep_mask.size()));
                         
-                        // Count how many tokens in this block are kept
                         size_t kept_count = 0;
                         for (size_t i = 0; i < block_token_count; ++i) {
                             if (image_keep_mask[mask_offset + i]) {
@@ -1120,23 +1062,9 @@ ov::Tensor InputsEmbedderMiniCPM::get_inputs_embeds(const std::string& unified_p
                             }
                         }
                         mask_offset += block_token_count;
-                        
                         tokens_per_image.push_back(kept_count);
-                        GENAI_DEBUG("[MiniCPM] Image %zu, block %zu: kept %zu/%zu tokens (%.1f%%)", 
-                                   img_idx, block, kept_count, block_token_count,
-                                   100.0 * kept_count / block_token_count);
                     }
                 }
-                
-                // Debug: Print final tokens_per_image
-                std::string final_tokens_str = "[MiniCPM] Final tokens_per_image = [";
-                for (size_t i = 0; i < tokens_per_image.size(); ++i) {
-                    final_tokens_str += std::to_string(tokens_per_image[i]);
-                    if (i + 1 < tokens_per_image.size()) final_tokens_str += ", ";
-                }
-                final_tokens_str += "]";
-                GENAI_DEBUG("%s", final_tokens_str.c_str());
-                GENAI_DEBUG("[MiniCPM] =========================================");
             }
         }
     }
