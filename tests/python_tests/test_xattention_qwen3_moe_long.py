@@ -27,12 +27,12 @@ def make_long_prompt(target_tokens: int = 1500) -> str:
 
 
 def run_pipeline(model_dir: str, device: str, prompt: str, max_new_tokens: int,
-                 scheduler_config=None) -> tuple:
+                 scheduler_config=None, **device_config) -> tuple:
     """Create pipeline, generate, return (output_text, elapsed_seconds)."""
     if scheduler_config is not None:
-        pipe = ov_genai.LLMPipeline(model_dir, device, scheduler_config=scheduler_config)
+        pipe = ov_genai.LLMPipeline(model_dir, device, scheduler_config=scheduler_config, **device_config)
     else:
-        pipe = ov_genai.LLMPipeline(model_dir, device)
+        pipe = ov_genai.LLMPipeline(model_dir, device, **device_config)
 
     config = ov_genai.GenerationConfig()
     config.max_new_tokens = max_new_tokens
@@ -55,12 +55,19 @@ def main():
     print(f"Prompt length (approx): ~{args.tokens} tokens")
     print(f"Max new tokens: {args.max_new_tokens}")
 
+    # On GPU, xAttention does not support per-channel quantized key cache.
+    device_config = {}
+    if "GPU" in args.device.upper():
+        device_config["KV_CACHE_PRECISION"] = "f16"
+        print("GPU detected: setting KV_CACHE_PRECISION=f16")
+
     # --- Baseline ---
     print()
     print("=" * 60)
     print("[1/2] Baseline — no xAttention")
     print("=" * 60)
-    text_base, t_base = run_pipeline(args.model_dir, args.device, prompt, args.max_new_tokens)
+    text_base, t_base = run_pipeline(args.model_dir, args.device, prompt, args.max_new_tokens,
+                                     **device_config)
     print(f"Time   : {t_base:.2f}s")
     print(f"Output : {text_base[:200]}")
 
@@ -79,7 +86,7 @@ def main():
         num_last_dense_tokens_in_prefill=100,
     )
     text_xa, t_xa = run_pipeline(args.model_dir, args.device, prompt, args.max_new_tokens,
-                                 scheduler_config=scheduler_config)
+                                 scheduler_config=scheduler_config, **device_config)
     print(f"Time   : {t_xa:.2f}s")
     print(f"Output : {text_xa[:200]}")
 

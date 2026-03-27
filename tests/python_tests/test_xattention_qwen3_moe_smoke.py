@@ -36,6 +36,13 @@ def main():
     config = ov_genai.GenerationConfig()
     config.max_new_tokens = 50
 
+    # On GPU, xAttention does not support per-channel quantized key cache.
+    # Disable KV cache quantization to avoid the conflict.
+    device_config = {}
+    if "GPU" in args.device.upper():
+        device_config["KV_CACHE_PRECISION"] = "f16"
+        timed_print("GPU detected: setting KV_CACHE_PRECISION=f16 (xAttention requires non-quantized key cache)")
+
     text_base = None
 
     # --- Baseline (no xAttention) ---
@@ -44,7 +51,7 @@ def main():
         timed_print("[1/2] Baseline — no xAttention")
         print("=" * 60)
         timed_print("Creating LLMPipeline (baseline) ...")
-        pipe_base = ov_genai.LLMPipeline(args.model_dir, args.device)
+        pipe_base = ov_genai.LLMPipeline(args.model_dir, args.device, **device_config)
         timed_print("Pipeline created. Generating ...")
         result_base = pipe_base.generate(prompt, config)
         text_base = result_base.texts[0]
@@ -71,7 +78,7 @@ def main():
     )
 
     timed_print("Creating LLMPipeline (xAttention) ...")
-    pipe_xa = ov_genai.LLMPipeline(args.model_dir, args.device, scheduler_config=scheduler_config)
+    pipe_xa = ov_genai.LLMPipeline(args.model_dir, args.device, scheduler_config=scheduler_config, **device_config)
     timed_print("Pipeline created. Generating ...")
     result_xa = pipe_xa.generate(prompt, config)
     text_xa = result_xa.texts[0]

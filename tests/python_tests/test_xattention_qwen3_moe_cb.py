@@ -32,8 +32,14 @@ def main():
         xattention_stride=8,
     )
 
+    # On GPU, xAttention does not support per-channel quantized key cache.
+    device_config = {}
+    if "GPU" in args.device.upper():
+        device_config["KV_CACHE_PRECISION"] = "f16"
+        print("GPU detected: setting KV_CACHE_PRECISION=f16")
+
     print("Creating ContinuousBatchingPipeline with xAttention ...")
-    pipe = ov_genai.ContinuousBatchingPipeline(args.model_dir, scheduler_config, args.device)
+    pipe = ov_genai.ContinuousBatchingPipeline(args.model_dir, scheduler_config, args.device, {}, device_config)
 
     config = ov_genai.GenerationConfig()
     config.max_new_tokens = 30

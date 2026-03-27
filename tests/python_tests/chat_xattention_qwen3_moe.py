@@ -26,9 +26,15 @@ def main():
     parser.add_argument("--no-xattention", action="store_true", help="Disable xAttention (baseline)")
     args = parser.parse_args()
 
+    # On GPU, xAttention does not support per-channel quantized key cache.
+    device_config = {}
+    if "GPU" in args.device.upper():
+        device_config["KV_CACHE_PRECISION"] = "f16"
+        print("GPU detected: setting KV_CACHE_PRECISION=f16")
+
     if args.no_xattention:
         print("Mode: baseline (no xAttention)")
-        pipe = ov_genai.LLMPipeline(args.model_dir, args.device)
+        pipe = ov_genai.LLMPipeline(args.model_dir, args.device, **device_config)
     else:
         print("Mode: xAttention enabled")
         scheduler_config = ov_genai.SchedulerConfig()
@@ -40,7 +46,7 @@ def main():
             xattention_stride=8,
             num_last_dense_tokens_in_prefill=100,
         )
-        pipe = ov_genai.LLMPipeline(args.model_dir, args.device, scheduler_config=scheduler_config)
+        pipe = ov_genai.LLMPipeline(args.model_dir, args.device, scheduler_config=scheduler_config, **device_config)
 
     config = ov_genai.GenerationConfig()
     config.max_new_tokens = 200
