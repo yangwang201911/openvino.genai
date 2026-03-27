@@ -10,38 +10,55 @@ num_last_dense_tokens_in_prefill.
 
 Usage:
     python test_xattention_qwen3_moe_smoke.py <model_dir> [device]
+    python test_xattention_qwen3_moe_smoke.py <model_dir> GPU.0 --xattention-only
 """
 
 import argparse
 import sys
+import time
 
 import openvino_genai as ov_genai
+
+
+def timed_print(msg):
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description="xAttention smoke test for Qwen3-MOE")
     parser.add_argument("model_dir", help="Path to the converted Qwen3-MOE model directory")
     parser.add_argument("device", nargs="?", default="CPU", help="Device (default: CPU)")
+    parser.add_argument("--xattention-only", action="store_true",
+                        help="Skip baseline, only test xAttention (useful for large models on GPU)")
     args = parser.parse_args()
 
     prompt = "What is the capital of France?"
     config = ov_genai.GenerationConfig()
     config.max_new_tokens = 50
 
+    text_base = None
+
     # --- Baseline (no xAttention) ---
-    print("=" * 60)
-    print("[1/2] Baseline — no xAttention")
-    print("=" * 60)
-    pipe_base = ov_genai.LLMPipeline(args.model_dir, args.device)
-    result_base = pipe_base.generate(prompt, config)
-    text_base = result_base.texts[0]
-    print(f"Output: {text_base}")
-    del pipe_base
+    if not args.xattention_only:
+        print("=" * 60)
+        timed_print("[1/2] Baseline — no xAttention")
+        print("=" * 60)
+        timed_print("Creating LLMPipeline (baseline) ...")
+        pipe_base = ov_genai.LLMPipeline(args.model_dir, args.device)
+        timed_print("Pipeline created. Generating ...")
+        result_base = pipe_base.generate(prompt, config)
+        text_base = result_base.texts[0]
+        timed_print(f"Output: {text_base}")
+        del pipe_base
+        timed_print("Baseline pipeline released.")
+    else:
+        timed_print("Skipping baseline (--xattention-only)")
 
     # --- With xAttention ---
     print()
     print("=" * 60)
-    print("[2/2] With xAttention (XATTENTION mode)")
+    step = "[1/1]" if args.xattention_only else "[2/2]"
+    timed_print(f"{step} With xAttention (XATTENTION mode)")
     print("=" * 60)
     scheduler_config = ov_genai.SchedulerConfig()
     scheduler_config.use_sparse_attention = True
@@ -53,26 +70,31 @@ def main():
         num_last_dense_tokens_in_prefill=100,
     )
 
+    timed_print("Creating LLMPipeline (xAttention) ...")
     pipe_xa = ov_genai.LLMPipeline(args.model_dir, args.device, scheduler_config=scheduler_config)
+    timed_print("Pipeline created. Generating ...")
     result_xa = pipe_xa.generate(prompt, config)
     text_xa = result_xa.texts[0]
-    print(f"Output: {text_xa}")
+    timed_print(f"Output: {text_xa}")
 
     # --- Compare ---
     print()
     print("=" * 60)
-    print("Comparison")
+    timed_print("Result")
     print("=" * 60)
-    match = text_base == text_xa
-    print(f"Baseline : {text_base[:120]}")
-    print(f"XAttn    : {text_xa[:120]}")
-    print(f"Match    : {match}")
-
-    if not match:
-        print("\nWARNING: outputs differ on short prompt — investigate further.")
-        sys.exit(1)
+    if text_base is not None:
+        match = text_base == text_xa
+        print(f"Baseline : {text_base[:120]}")
+        print(f"XAttn    : {text_xa[:120]}")
+        print(f"Match    : {match}")
+        if not match:
+            print("\nWARNING: outputs differ on short prompt — investigate further.")
+            sys.exit(1)
+        else:
+            print("\nPASS: short-prompt outputs match.")
     else:
-        print("\nPASS: short-prompt outputs match.")
+        print(f"XAttn output: {text_xa[:200]}")
+        print("\nPASS: xAttention pipeline created and generated successfully.")
 
 
 if __name__ == "__main__":
