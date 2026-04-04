@@ -59,7 +59,11 @@ ContinuousBatchingPipeline::ContinuousBatchingPipeline( const std::filesystem::p
 
     std::shared_ptr<InputsEmbedder> embedder;
     if (std::filesystem::exists(models_path / "openvino_text_embeddings_model.xml")) {
-        embedder = std::make_shared<InputsEmbedder>(models_path, device, vision_encoder_properties);
+        if (std::filesystem::exists(models_path / "openvino_merge_embeds_model.xml")) {
+            embedder = nullptr;
+        } else {
+            embedder = std::make_shared<InputsEmbedder>(models_path, device, vision_encoder_properties);
+        }
     }
 
     utils::print_scheduler_config_info(scheduler_config);
