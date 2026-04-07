@@ -688,12 +688,14 @@ public:
             }
             
             if (deepstack_context.have_deepstack_visual_inputs) {
-                // Split the combined [layers, tokens, hidden] tensor into per-layer tensors
-                // and set them as deepstack_embeds.{i} to match model input port names.
+                // The model expects deepstack_embeds.{i} with shape [1, total_num_tokens, hidden_size],
+                // matching the sequence length of inputs_embeds and visual_pos_mask.
+                // The combined tensor has shape [layers, scheduled_vision_tokens, hidden_size]
+                // (compacted). Here we scatter vision-token data to the correct positions.
                 const size_t num_layers = deepstack_context.deepstack_layers_num;
-                const size_t scheduled_tokens = deepstack_visual_embeds.get_shape()[1];
+                const size_t compact_tokens = deepstack_visual_embeds.get_shape()[1];
                 const size_t hs = deepstack_visual_embeds.get_shape()[2];
-                const ov::Shape per_layer_shape{1, scheduled_tokens, hs};
+                const ov::Shape per_layer_shape{1, total_num_tokens, hs};
                 for (size_t layer = 0; layer < num_layers; ++layer) {
                     const std::string port_name = "deepstack_embeds." + std::to_string(layer);
                     auto& cached = m_cached_deepstack_embeds_per_layer[layer];
@@ -707,11 +709,20 @@ public:
                     if (cached.get_shape() != per_layer_shape) {
                         cached.set_shape(per_layer_shape);
                     }
-                    // Copy this layer's slice from the combined tensor
-                    const float* src = deepstack_visual_embeds.data<float>() + layer * scheduled_tokens * hs;
-                    std::copy_n(src, scheduled_tokens * hs, cached.data<float>());
+                    // Zero-fill then scatter compacted vision tokens to mask-true positions
+                    float* dst = cached.data<float>();
+                    std::fill_n(dst, total_num_tokens * hs, 0.0f);
+                    const float* src = deepstack_visual_embeds.data<float>() + layer * compact_tokens * hs;
+                    size_t src_idx = 0;
+                    for (size_t t = 0; t < total_num_tokens && src_idx < compact_tokens; ++t) {
+                        if (visual_pos_masks_data[t]) {
+                            std::copy_n(src + src_idx * hs, hs, dst + t * hs);
+                            ++src_idx;
+                        }
+                    }
                     std::cerr << "[DEBUG][ModelRunner] set_tensor(" << port_name << ") shape=[1,"
-                              << scheduled_tokens << "," << hs << "]" << std::endl;
+                              << total_num_tokens << "," << hs << "] (scattered "
+                              << src_idx << " vision tokens)" << std::endl;
                     m_request.set_tensor(port_name, cached);
                 }
 
