@@ -9,10 +9,14 @@ source ../../../source_ov.sh
 
 echo "${SCRIPT_DIR_RUN_MY_SAMPLE_GENAI}"
 
+MODEL_DIR="${1:-/home/xiping/mygithub/modular_genai/composable_pipeline/tests/test_models/Qwen3-Omni-4B-Instruct-multilingual-int4}"
+DATA_DIR="${2:-/home/xiping/mygithub/modular_genai/composable_pipeline/tests/cpp/test_data/llm_inputs_data}"
+DEVICE="${3:-CPU}"
+
 SAMPLE_BIN="${SCRIPT_DIR_RUN_MY_SAMPLE_GENAI}/build/samples/cpp/custom_vit_cb/custom_vit_cb"
 if [[ ! -x "${SAMPLE_BIN}" ]]; then
 	echo "Missing sample binary: ${SAMPLE_BIN}"
 	exit 1
 fi
 
-"${SAMPLE_BIN}"
+"${SAMPLE_BIN}" "${MODEL_DIR}" "${DATA_DIR}" "${DEVICE}"

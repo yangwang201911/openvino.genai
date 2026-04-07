@@ -21,13 +21,12 @@
 #include "openvino/runtime/tensor.hpp"
 
 int main(int argc, char* argv[]) {
-    // Hardcode input parameters for debugging.
-    const std::filesystem::path model_dir = "/mnt/xiping/mygithub/modular_genai/composable_pipeline/tests/test_models/"
-                                            "Qwen3-Omni-4B-Instruct-multilingual-int4";
-    const std::string device = "CPU";
-
-    std::string data_dir =
-        "/mnt/xiping/mygithub/modular_genai/composable_pipeline/tests/cpp/test_data/llm_inputs_data/";
+    if (argc < 3) {
+        throw std::runtime_error(std::string{"Usage: "} + argv[0] + " <MODEL_DIR> <DATA_DIR> [DEVICE]");
+    }
+    const std::filesystem::path model_dir = argv[1];
+    const std::string data_dir = std::string(argv[2]) + "/";
+    const std::string device = (argc >= 4) ? argv[3] : "CPU";
     auto load_tensor = [&](const std::string& filename) -> ov::Tensor {
         auto trim = [](std::string value) {
             value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch) {

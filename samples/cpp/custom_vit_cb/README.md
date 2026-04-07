@@ -1,17 +1,33 @@
 # C++ custom ViT + continuous batching (inputs_embeds)
 
-This draft sample shows how to pass user-produced `inputs_embeds` directly into `ov::genai::ContinuousBatchingPipeline` for inference. The ViT (or any custom visual encoder) is expected to be implemented by the user; the sample only demonstrates how to feed its output into continuous batching.
+This sample shows how to pass user-produced `inputs_embeds` directly into
+`ov::genai::ContinuousBatchingPipeline` for inference. The ViT (or any custom
+visual encoder) is expected to be implemented by the caller; the sample only
+demonstrates how to feed its output into continuous batching with extra LM
+inputs such as `deepstack_embeds.*`, `attention_mask`, `visual_pos_mask`, and
+`beam_idx`.
 
 ## Build
 
-Use the provided build script:
-
-`./build.sh`
-
-> If OpenVINO GenAI is not found automatically, set `OpenVINOGenAI_DIR` to the folder that contains `OpenVINOGenAIConfig.cmake` before running the script.
+```bash
+# From the openvino.genai root:
+./build.sh
+```
 
 ## Run
 
-`./build/custom_vit_cb <MODEL_DIR>`
+```bash
+./run_sample.sh [MODEL_DIR] [DATA_DIR] [DEVICE]
+```
 
-`MODEL_DIR` must point to a model export that supports `inputs_embeds` in the continuous batching pipeline. Replace the placeholder embedding creation in [custom_vit_cb.cpp](custom_vit_cb.cpp) with your custom ViT inference code.
+Or directly:
+
+```bash
+./build/samples/cpp/custom_vit_cb/custom_vit_cb <MODEL_DIR> <DATA_DIR> [DEVICE]
+```
+
+- `MODEL_DIR` — path to a model directory whose `config.json` contains
+  `"model_type": "modeling_vl"` (e.g. Qwen3-Omni-4B-Instruct-multilingual-int4).
+- `DATA_DIR` — path to a directory containing pre-exported tensor files
+  (`inputs_embeds`, `attention_mask`, `position_ids`, `deepstack_embeds_*`, etc.).
+- `DEVICE` — inference device (default: `CPU`).
