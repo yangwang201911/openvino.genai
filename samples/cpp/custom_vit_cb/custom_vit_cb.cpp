@@ -27,6 +27,16 @@ int main(int argc, char* argv[]) {
     const std::filesystem::path model_dir = argv[1];
     const std::string data_dir = std::string(argv[2]) + "/";
     const std::string device = (argc >= 4) ? argv[3] : "CPU";
+
+    auto shape_to_string = [](const ov::Shape& shape) -> std::string {
+        std::string s = "[";
+        for (size_t i = 0; i < shape.size(); ++i) {
+            if (i > 0) s += ", ";
+            s += std::to_string(shape[i]);
+        }
+        return s + "]";
+    };
+
     auto load_tensor = [&](const std::string& filename) -> ov::Tensor {
         auto trim = [](std::string value) {
             value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch) {
@@ -98,61 +108,93 @@ int main(int argc, char* argv[]) {
         } else {
             throw std::runtime_error("Unsupported element type in meta file: " + type.to_string());
         }
+        std::cerr << "[DEBUG] Loaded tensor '" << filename << "': shape=" << shape_to_string(tensor.get_shape())
+                  << " type=" << tensor.get_element_type() << std::endl;
         return tensor;
     };
 
     ov::Tensor inputs_embeds = load_tensor("inputs_embeds");
-    ov::Tensor attention_mask = load_tensor("attention_mask");
-    ov::Tensor beam_idx = load_tensor("beam_idx");
-    ov::Tensor visual_pos_mask = load_tensor("visual_pos_mask");
+    ov::Tensor visual_pos_masks = load_tensor("visual_pos_mask");
     ov::Tensor deepstack_embeds_0 = load_tensor("deepstack_embeds_0");
     ov::Tensor deepstack_embeds_1 = load_tensor("deepstack_embeds_1");
     ov::Tensor deepstack_embeds_2 = load_tensor("deepstack_embeds_2");
     ov::Tensor position_ids = load_tensor("position_ids");
 
-    std::unordered_map<std::string, ov::Tensor> extra_inputs;
-    extra_inputs["attention_mask"] = attention_mask;
-    extra_inputs["beam_idx"] = beam_idx;
-    extra_inputs["visual_pos_mask"] = visual_pos_mask;
-    std::vector<ov::Tensor> deepstack_embeds = {deepstack_embeds_0, deepstack_embeds_1, deepstack_embeds_2};
-    for (size_t i = 0; i < deepstack_embeds.size(); ++i) {
-        extra_inputs["deepstack_embeds." + std::to_string(i)] = deepstack_embeds.at(i);
+    // Combine per-layer deepstack tensors into a single [layers, vision_tokens, hidden_size] tensor.
+    // Each individual tensor is expected to have shape [1, vision_tokens, hidden_size].
+    {
+        const std::vector<ov::Tensor> layers = {deepstack_embeds_0, deepstack_embeds_1, deepstack_embeds_2};
+        const size_t num_layers = layers.size();
+        const auto& first_shape = layers[0].get_shape();
+        OPENVINO_ASSERT(first_shape.size() == 3 && first_shape[0] == 1,
+            "Expected deepstack layer tensor shape [1, tokens, hidden], got ", shape_to_string(first_shape));
+        const size_t vision_tokens = first_shape[1];
+        const size_t hidden_size = first_shape[2];
+        ov::Tensor deepstack_visual_embeds(layers[0].get_element_type(),
+                                           {num_layers, vision_tokens, hidden_size});
+        const size_t layer_bytes = vision_tokens * hidden_size * sizeof(float);
+        auto* dst = deepstack_visual_embeds.data<uint8_t>();
+        for (size_t i = 0; i < num_layers; ++i) {
+            OPENVINO_ASSERT(layers[i].get_shape() == first_shape,
+                "Deepstack layer ", i, " shape mismatch: ", shape_to_string(layers[i].get_shape()),
+                " vs ", shape_to_string(first_shape));
+            std::memcpy(dst + i * layer_bytes, layers[i].data<uint8_t>(), layer_bytes);
+        }
+        std::cerr << "[DEBUG] Combined deepstack_visual_embeds: shape="
+                  << shape_to_string(deepstack_visual_embeds.get_shape()) << std::endl;
+
+        // Build extra_inputs with the key names expected by SequenceGroup:
+        //   "deepstack_visual_embeds" — combined [layers, tokens, hidden] tensor
+        //   "visual_pos_masks"        — boolean mask tensor
+        // NOTE: attention_mask and beam_idx are managed internally by the CB pipeline.
+        std::unordered_map<std::string, ov::Tensor> extra_inputs;
+        extra_inputs["deepstack_visual_embeds"] = deepstack_visual_embeds;
+        extra_inputs["visual_pos_masks"] = visual_pos_masks;
+
+        std::cerr << "[DEBUG] extra_inputs keys: ";
+        for (const auto& [k, v] : extra_inputs) {
+            std::cerr << k << "=" << shape_to_string(v.get_shape()) << " ";
+        }
+        std::cerr << std::endl;
+
+        std::optional<std::vector<std::unordered_map<std::string, ov::Tensor>>> extra_inputs_list =
+            std::vector<std::unordered_map<std::string, ov::Tensor>>{std::move(extra_inputs)};
+
+        std::optional<std::vector<std::pair<ov::Tensor, std::optional<int64_t>>>> position_ids_list =
+            std::vector<std::pair<ov::Tensor, std::optional<int64_t>>>{{position_ids, std::nullopt}};
+
+        ov::genai::SchedulerConfig scheduler_config;
+        scheduler_config.enable_prefix_caching = false;
+        scheduler_config.max_num_batched_tokens = std::numeric_limits<std::size_t>::max();
+
+        std::cerr << "[DEBUG] Creating ContinuousBatchingPipeline with model_dir=" << model_dir
+                  << " device=" << device << std::endl;
+
+        const ov::AnyMap props;
+        auto m_pipeline =
+            std::make_unique<ov::genai::ContinuousBatchingPipeline>(model_dir, scheduler_config, device, props);
+
+        ov::genai::GenerationConfig generation_config;
+        generation_config.max_new_tokens = 64;
+
+        std::cerr << "[DEBUG] inputs_embeds shape=" << shape_to_string(inputs_embeds.get_shape())
+                  << " position_ids shape=" << shape_to_string(position_ids.get_shape()) << std::endl;
+        std::cerr << "[DEBUG] Calling generate()..." << std::endl;
+
+        const auto results = m_pipeline->generate({inputs_embeds},
+                                                  {generation_config},
+                                                  std::monostate(),
+                                                  std::nullopt,
+                                                  position_ids_list,
+                                                  extra_inputs_list);
+
+        std::string text;
+        if (!results.empty() && !results[0].m_generation_ids.empty() && !results[0].m_generation_ids[0].empty()) {
+            ov::genai::Tokenizer tokenizer = m_pipeline->get_tokenizer();
+            text = tokenizer.decode(results[0].m_generation_ids[0]);
+        }
+        std::cout << "Generated text: " << text << std::endl;
     }
-    std::optional<std::vector<std::unordered_map<std::string, ov::Tensor>>> extra_inputs_list = std::nullopt;
-    if (!extra_inputs.empty()) {
-        extra_inputs_list = std::vector<std::unordered_map<std::string, ov::Tensor>>{std::move(extra_inputs)};
-    }
 
-    std::optional<std::vector<std::pair<ov::Tensor, std::optional<int64_t>>>> position_ids_list =
-        std::vector<std::pair<ov::Tensor, std::optional<int64_t>>>{{position_ids, std::nullopt}};
-
-    ov::genai::SchedulerConfig scheduler_config;
-    scheduler_config.enable_prefix_caching = false;
-    scheduler_config.max_num_batched_tokens = std::numeric_limits<std::size_t>::max();
-
-    const ov::AnyMap props;
-    auto m_pipeline =
-        std::make_unique<ov::genai::ContinuousBatchingPipeline>(model_dir, scheduler_config, device, props);
-
-    ov::genai::GenerationConfig generation_config;
-    generation_config.max_new_tokens = 64;
-
-    const auto results = m_pipeline->generate({inputs_embeds},
-                                              {generation_config},
-                                              std::monostate(),
-                                              std::nullopt,
-                                              position_ids_list,
-                                              extra_inputs_list);
-
-    std::string text;
-    if (!results.empty() && !results[0].m_generation_ids.empty() && !results[0].m_generation_ids[0].empty()) {
-        ov::genai::Tokenizer tokenizer = m_pipeline->get_tokenizer();
-        text = tokenizer.decode(results[0].m_generation_ids[0]);
-    }
-    std::cout << "Generated text: " << text << std::endl;
-
-    std::string expected_text = R"(**Summary:** The forecast indicates a transition from sunny conditions to a stormy day, with a high chance of thunderstorms. The visual evidence of a heavy downpour and the sound of thunder confirm that the weather is indeed stormy, and the forecast is accurate.
-
-        * *Voice Alert : **The forecast is correct.A storm )";
     return 0;
 }

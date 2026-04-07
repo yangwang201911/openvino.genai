@@ -420,6 +420,14 @@ public:
 
             if (lm_extra_inputs.has_value()) {
                 for (const auto& [input_name, tensor] : lm_extra_inputs.value()) {
+                    std::cerr << "[DEBUG][SequenceGroup] extra input: '" << input_name
+                              << "' shape=[";
+                    for (size_t d = 0; d < tensor.get_shape().size(); ++d) {
+                        if (d) std::cerr << ",";
+                        std::cerr << tensor.get_shape()[d];
+                    }
+                    std::cerr << "] type=" << tensor.get_element_type() << std::endl;
+
                     if (input_name == "deepstack_visual_embeds") {
                         m_deepstack_visual_embeds = ov::Tensor(tensor.get_element_type(), tensor.get_shape());
                         tensor.copy_to(m_deepstack_visual_embeds);
@@ -427,6 +435,10 @@ public:
                         m_visual_pos_masks = std::vector<bool>(tensor.data<const bool>(), tensor.data<const bool>() + tensor.get_size());
                     }
                 }
+                std::cerr << "[DEBUG][SequenceGroup] deepstack_visual_embeds set: "
+                          << (m_deepstack_visual_embeds ? "yes" : "no")
+                          << ", visual_pos_masks set: "
+                          << (m_visual_pos_masks.has_value() ? "yes" : "no") << std::endl;
             }
             
             m_sequence_group_type = SequenceGroupType::EMBEDDINGS;

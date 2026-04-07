@@ -665,6 +665,9 @@ public:
         }
         else if (sequence_group_type == SequenceGroupType::EMBEDDINGS) {
             if (!m_cached_inputs_embeds) {
+                std::cerr << "[DEBUG][ModelRunner] set_tensor(inputs_embeds) shape=[";
+                for (size_t d = 0; d < inputs_embeds.get_shape().size(); ++d) { if (d) std::cerr << ","; std::cerr << inputs_embeds.get_shape()[d]; }
+                std::cerr << "]" << std::endl;
                 m_request.set_tensor("inputs_embeds", inputs_embeds);
             }
             if (have_token_type_ids && !m_cached_token_type_ids) {
@@ -673,12 +676,20 @@ public:
             
             if (deepstack_context.have_deepstack_visual_inputs) {
                 if (!m_cached_deepstack_visual_embeds) {
+                    std::cerr << "[DEBUG][ModelRunner] set_tensor(deepstack_visual_embeds) shape=[";
+                    for (size_t d = 0; d < deepstack_visual_embeds.get_shape().size(); ++d) { if (d) std::cerr << ","; std::cerr << deepstack_visual_embeds.get_shape()[d]; }
+                    std::cerr << "]" << std::endl;
                     m_request.set_tensor("deepstack_visual_embeds", deepstack_visual_embeds);
                 }
 
                 if (!m_cached_visual_pos_masks) {
+                    std::cerr << "[DEBUG][ModelRunner] set_tensor(visual_pos_masks) shape=[";
+                    for (size_t d = 0; d < visual_pos_masks.get_shape().size(); ++d) { if (d) std::cerr << ","; std::cerr << visual_pos_masks.get_shape()[d]; }
+                    std::cerr << "]" << std::endl;
                     m_request.set_tensor("visual_pos_masks", visual_pos_masks);
                 }
+            } else {
+                std::cerr << "[DEBUG][ModelRunner] have_deepstack_visual_inputs=false, skipping deepstack tensors" << std::endl;
             }
         }
         if (hidden_state_input && hidden_state_input.get_size() > 0) {
