@@ -132,13 +132,13 @@ int main(int argc, char* argv[]) {
         const size_t hidden_size = first_shape[2];
         ov::Tensor deepstack_visual_embeds(layers[0].get_element_type(),
                                            {num_layers, vision_tokens, hidden_size});
-        const size_t layer_bytes = vision_tokens * hidden_size * sizeof(float);
-        auto* dst = deepstack_visual_embeds.data<uint8_t>();
+        const size_t layer_elems = vision_tokens * hidden_size;
+        auto* dst = deepstack_visual_embeds.data<float>();
         for (size_t i = 0; i < num_layers; ++i) {
             OPENVINO_ASSERT(layers[i].get_shape() == first_shape,
                 "Deepstack layer ", i, " shape mismatch: ", shape_to_string(layers[i].get_shape()),
                 " vs ", shape_to_string(first_shape));
-            std::memcpy(dst + i * layer_bytes, layers[i].data<uint8_t>(), layer_bytes);
+            std::memcpy(dst + i * layer_elems, layers[i].data<float>(), layer_elems * sizeof(float));
         }
         std::cerr << "[DEBUG] Combined deepstack_visual_embeds: shape="
                   << shape_to_string(deepstack_visual_embeds.get_shape()) << std::endl;
