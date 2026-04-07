@@ -7,7 +7,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -165,7 +164,12 @@ int main(int argc, char* argv[]) {
 
         ov::genai::SchedulerConfig scheduler_config;
         scheduler_config.enable_prefix_caching = false;
-        scheduler_config.max_num_batched_tokens = std::numeric_limits<std::size_t>::max();
+        // Use a bounded token budget to avoid excessive KV cache pre-allocation on GPU.
+        // Must be >= prompt length (1721 in this test case).
+        scheduler_config.max_num_batched_tokens = 4096;
+        scheduler_config.max_num_seqs = 2;
+        // Limit KV cache size to 2 GB to keep within GPU memory limits.
+        scheduler_config.cache_size = 2;
 
         std::cerr << "[DEBUG] Creating ContinuousBatchingPipeline with model_dir=" << model_dir
                   << " device=" << device << std::endl;
