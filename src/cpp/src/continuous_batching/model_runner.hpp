@@ -240,8 +240,8 @@ class ModelRunner {
     ov::Tensor m_cached_max_context_len;
     ov::Tensor m_cached_score_aggregation_window;
     ov::Tensor m_cached_token_type_ids;
-    ov::Tensor m_cached_deepstack_visual_embeds;
-    ov::Tensor m_cached_visual_pos_masks;
+    std::vector<ov::Tensor> m_cached_deepstack_embeds_per_layer;
+    ov::Tensor m_cached_visual_pos_mask;
 public:
     /**
      * Constructs the ModelRunner.
@@ -336,6 +336,15 @@ public:
      * @return An ov::Tensor with next-token logit scores for each sequence processed during this `forward` call.
      */
     ov::Tensor forward(const std::vector<SequenceGroup::Ptr> & sequence_groups, const Scheduler::Output& scheduler_output) {
+        static bool inputs_logged = false;
+        if (!inputs_logged) {
+            std::cerr << "[DEBUG][ModelRunner] Model input ports:";
+            for (const auto& input : m_request.get_compiled_model().inputs()) {
+                std::cerr << " " << input.get_any_name();
+            }
+            std::cerr << std::endl;
+            inputs_logged = true;
+        }
         m_sequence_hidden_state_mapping.clear();
         size_t num_sequence_groups = scheduler_output.m_scheduled_sequence_groups_ids.size();
 
@@ -428,12 +437,16 @@ public:
                     std::max(deepstack_context.total_scheduled_vision_tokens, size_t(1)),
                     hidden_size
                 };
-                deepstack_visual_embeds = _get_or_resize_tensor(m_cached_deepstack_visual_embeds, "deepstack_visual_embeds",
-                    deepstack_embeds_shape, ov::element::f32);
-                
+                // Build combined tensor for internal scheduling logic
+                deepstack_visual_embeds = ov::Tensor(ov::element::f32, deepstack_embeds_shape);
                 std::fill_n(deepstack_visual_embeds.data<float>(), deepstack_visual_embeds.get_size(), 0.0f);
+
+                // Allocate per-layer cached tensors to match model input ports: deepstack_embeds.{i}
+                if (m_cached_deepstack_embeds_per_layer.size() != deepstack_context.deepstack_layers_num) {
+                    m_cached_deepstack_embeds_per_layer.resize(deepstack_context.deepstack_layers_num);
+                }
                 
-                visual_pos_masks = _get_or_resize_tensor(m_cached_visual_pos_masks, "visual_pos_masks",
+                visual_pos_masks = _get_or_resize_tensor(m_cached_visual_pos_mask, "visual_pos_mask",
                     {1, total_num_tokens}, ov::element::boolean);
 
                 visual_pos_masks_data = visual_pos_masks.data<bool>();
@@ -675,18 +688,38 @@ public:
             }
             
             if (deepstack_context.have_deepstack_visual_inputs) {
-                if (!m_cached_deepstack_visual_embeds) {
-                    std::cerr << "[DEBUG][ModelRunner] set_tensor(deepstack_visual_embeds) shape=[";
-                    for (size_t d = 0; d < deepstack_visual_embeds.get_shape().size(); ++d) { if (d) std::cerr << ","; std::cerr << deepstack_visual_embeds.get_shape()[d]; }
-                    std::cerr << "]" << std::endl;
-                    m_request.set_tensor("deepstack_visual_embeds", deepstack_visual_embeds);
+                // Split the combined [layers, tokens, hidden] tensor into per-layer tensors
+                // and set them as deepstack_embeds.{i} to match model input port names.
+                const size_t num_layers = deepstack_context.deepstack_layers_num;
+                const size_t scheduled_tokens = deepstack_visual_embeds.get_shape()[1];
+                const size_t hs = deepstack_visual_embeds.get_shape()[2];
+                const ov::Shape per_layer_shape{1, scheduled_tokens, hs};
+                for (size_t layer = 0; layer < num_layers; ++layer) {
+                    const std::string port_name = "deepstack_embeds." + std::to_string(layer);
+                    auto& cached = m_cached_deepstack_embeds_per_layer[layer];
+                    if (!cached) {
+                        try {
+                            cached = m_request.get_tensor(port_name);
+                        } catch (const ov::Exception&) {
+                            cached = ov::Tensor(ov::element::f32, per_layer_shape);
+                        }
+                    }
+                    if (cached.get_shape() != per_layer_shape) {
+                        cached.set_shape(per_layer_shape);
+                    }
+                    // Copy this layer's slice from the combined tensor
+                    const float* src = deepstack_visual_embeds.data<float>() + layer * scheduled_tokens * hs;
+                    std::copy_n(src, scheduled_tokens * hs, cached.data<float>());
+                    std::cerr << "[DEBUG][ModelRunner] set_tensor(" << port_name << ") shape=[1,"
+                              << scheduled_tokens << "," << hs << "]" << std::endl;
+                    m_request.set_tensor(port_name, cached);
                 }
 
-                if (!m_cached_visual_pos_masks) {
-                    std::cerr << "[DEBUG][ModelRunner] set_tensor(visual_pos_masks) shape=[";
+                if (!m_cached_visual_pos_mask) {
+                    std::cerr << "[DEBUG][ModelRunner] set_tensor(visual_pos_mask) shape=[";
                     for (size_t d = 0; d < visual_pos_masks.get_shape().size(); ++d) { if (d) std::cerr << ","; std::cerr << visual_pos_masks.get_shape()[d]; }
                     std::cerr << "]" << std::endl;
-                    m_request.set_tensor("visual_pos_masks", visual_pos_masks);
+                    m_request.set_tensor("visual_pos_mask", visual_pos_masks);
                 }
             } else {
                 std::cerr << "[DEBUG][ModelRunner] have_deepstack_visual_inputs=false, skipping deepstack tensors" << std::endl;
