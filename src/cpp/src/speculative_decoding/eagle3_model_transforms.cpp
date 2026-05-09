@@ -227,8 +227,8 @@ void transform_hidden_state(std::shared_ptr<ov::Model>& model, const std::vector
         return;
     }
     OPENVINO_ASSERT(
-        hidden_layers_to_abstract.size() == 3 || hidden_layers_to_abstract.size() == 1,
-        "Expected exactly 1 or 3 hidden layers for extraction: 1 for draft model, 3 for main model (early/middle/late stages)."
+        hidden_layers_to_abstract.size() >= 1,
+        "Expected at least 1 hidden layer for extraction."
     );
 
     std::vector<std::string> patterns;

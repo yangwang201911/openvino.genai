@@ -77,6 +77,7 @@ protected:
     class ContinuousBatchingForPromptLookupImpl;
     class SpeculativeDecodingImpl;
     class Eagle3DecodingImpl;
+    class DFlashDecodingImpl;
     class PromptLookupImpl;
 
     friend class ContinuousBatchingForSpeculativeDecodingImpl;
@@ -85,6 +86,7 @@ protected:
     friend class ContinuousBatchingForEagle3DecodingImpl;
     friend class SpeculativeDecodingImpl;
     friend class Eagle3DecodingImpl;
+    friend class DFlashDecodingImpl;
     friend class PromptLookupImpl;
     friend class VLMPipeline;
 
