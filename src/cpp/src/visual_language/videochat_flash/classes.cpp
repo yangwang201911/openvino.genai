@@ -950,12 +950,10 @@ EncodedImage VisionEncoderVideoChatFlashQwen::encode(const ov::Tensor& image, co
     OPENVINO_ASSERT(img_shape.size() == 4 && img_shape[0] == 1,
                     "Input image must be 4D [1, H, W, C], got rank ", img_shape.size(),
                     " and batch ", (img_shape.size() >= 1 ? img_shape[0] : 0), ".");
-
-    // Preprocess the single image frame. Unlike video, images use T=1 with a dedicated
-    // image positional embedding (m_img_pos_emb) matching the original HuggingFace model.
-    auto preprocessed_single = preprocess(image, target_size,
-                                          m_processor_config.image_mean,
-                                          m_processor_config.image_std);
+    // Preprocess the single image frame using the unified preprocessing path (OV graph or CPU loop).
+    std::optional<CircularBufferQueueElementGuard<ov::InferRequest>> preprocess_guard;
+    auto preprocess_func = get_preprocess_func();
+    auto preprocessed_single = preprocess_func(image, target_size, preprocess_guard);
 
     ov::Tensor final_features = encode_preprocessed_frames(preprocessed_single, m_img_pos_emb, m_target_num_token);
 
